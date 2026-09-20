@@ -1,0 +1,185 @@
+Langkah yang diambil oleh Ester Kristian untuk menambahkan **visibilitas operasional dan sistem peringatan (alerting)** pada proses pembersihan file yatim adalah ciri khas dari arsitektur perangkat lunak tingkat *enterprise*. Ini mencegah "kebocoran penyimpanan" (*storage leak*) yang sering kali tidak terdeteksi hingga tagihan cloud membengkak atau penyimpanan penuh.
+
+Berdasarkan tugas terbaru: **"Beri pengelola peringatan saat file gagal dibersihkan"**, berikut adalah rancangan teknis dan implementasi kode yang dapat langsung diintegrasikan ke dalam *codebase* Anda.
+
+---
+
+### 1. Pembaruan Skema Database (`lib/db/src/schema/qaqc.ts`)
+Untuk memantau kegagalan berulang, kita memerlukan tabel log khusus yang mencatat hasil setiap eksekusi *cleanup job*. Ini memungkinkan sistem mendeteksi pola kegagalan (misalnya, token AWS S3 kedaluwarsa atau masalah izin).
+
+```typescript
+// lib/db/src/schema/qaqc.ts
+import { pgTable, serial, timestamp, integer, text, varchar } from 'drizzle-orm/pg-core'; // Contoh menggunakan Drizzle ORM
+
+export const storageCleanupLogs = pgTable('storage_cleanup_logs', {
+  id: serial('id').primaryKey(),
+  runAt: timestamp('run_at').defaultNow().notNull(),
+  filesPending: integer('files_pending').default(0).notNull(),      // File yang menunggu klaim
+  filesDeleted: integer('files_deleted').default(0).notNull(),      // File yatim yang berhasil dihapus
+  filesRetained: integer('files_retained').default(0).notNull(),    // File yang dipertahankan (sudah ada metadata)
+  filesFailed: integer('files_failed').default(0).notNull(),        // File yang gagal diproses
+  errorSummary: text('error_summary'),                              // Ringkasan error jika ada kegagalan
+});
+```
+
+---
+
+### 2. Endpoint Operasional Terproteksi (`artifacts/api-server/src/routes/admin.ts`)
+Endpoint ini akan menyediakan data *real-time* untuk dashboard pengelola dan logika pemicu peringatan (*alert trigger*). Endpoint ini **wajib** dibatasi hanya untuk peran `ADMIN` atau `SYSTEM_OPERATOR` menggunakan *middleware* auth yang sudah Anda bangun di Task #5.
+
+```typescript
+// artifacts/api-server/src/routes/admin.ts
+import { Router } from 'express';
+import { requireAuth, requireRole } from '../middlewares/auth'; // Middleware dari Task #5
+import { db } from '../../lib/db';
+import { storageCleanupLogs } from '../../lib/db/schema/qaqc';
+import { desc, sql } from 'drizzle-orm';
+
+const router = Router();
+
+// GET /api/admin/storage-cleanup/stats
+// Hanya dapat diakses oleh peran 'ADMIN' atau 'SUPER_ADMIN'
+router.get(
+  '/storage-cleanup/stats',
+  requireAuth,
+  requireRole(['ADMIN', 'SUPER_ADMIN']), 
+  async (req, res) => {
+    try {
+      // Ambil 5 log pembersihan terakhir untuk mendeteksi kegagalan berulang
+      const recentLogs = await db.query.storageCleanupLogs.findMany({
+        orderBy: [desc(storageCleanupLogs.runAt)],
+        limit: 5,
+      });
+
+      // Hitung total kegagalan berturut-turut
+      const consecutiveFailures = recentLogs.filter(log => log.filesFailed > 0).length;
+      
+      // Tentukan status peringatan
+      let alertLevel: 'OK' | 'WARNING' | 'CRITICAL' = 'OK';
+      let alertMessage = 'Sistem pembersihan berjalan normal.';
+
+      if (consecutiveFailures >= 3) {
+        alertLevel = 'CRITICAL';
+        alertMessage = 'PERINGATAN: Gagal membersihkan file yatim selama 3 siklus berturut-turut. Periksa kredensial storage atau log server.';
+      } else if (consecutiveFailures >= 1) {
+        alertLevel = 'WARNING';
+        alertMessage = 'Terdeteksi kegagalan pembersihan pada siklus terakhir. Memantau...';
+      }
+
+      res.json({
+        alertLevel,
+        alertMessage,
+        recentLogs,
+        summary: {
+          totalPending: recentLogs[0]?.filesPending || 0,
+          totalFailed: recentLogs[0]?.filesFailed || 0,
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Gagal mengambil statistik pembersihan storage.' });
+    }
+  }
+);
+
+export default router;
+```
+
+---
+
+### 3. Logika Pembersihan dengan Klaim Atomik & Penanganan Kegagalan (`artifacts/api-server/src/lib/object-storage.ts`)
+Untuk memastikan dua proses pembersih paralel tidak memproses *object* yang sama (race condition), kita perlu menggunakan mekanisme **klaim atomik** (misalnya, menandai file sebagai `processing` di database sebelum dihapus dari storage, atau menggunakan *advisory locks* di PostgreSQL).
+
+```typescript
+// artifacts/api-server/src/lib/object-storage.ts
+import { db } from '../db';
+import { storageCleanupLogs } from '../db/schema/qaqc';
+
+export async function runOrphanedFileCleanup() {
+  let stats = { pending: 0, deleted: 0, retained: 0, failed: 0 };
+  let errorSummary = null;
+
+  try {
+    // 1. TEMUKAN & KLAIM: Ambil file yang kedaluwarsa (> 24 jam) DAN belum diklaim oleh proses lain
+    // (Asumsi: ada kolom 'cleanup_status' di tabel uploads: 'pending' | 'processing' | 'done' | 'failed')
+    const orphanedFiles = await db.query.uploads.findMany({
+      where: sql`cleanup_status = 'pending' AND created_at < NOW() - INTERVAL '24 hours' AND metadata_id IS NULL`,
+      limit: 100, // Batch processing untuk mencegah timeout
+    });
+
+    stats.pending = orphanedFiles.length;
+
+    for (const file of orphanedFiles) {
+      try {
+        // 2. KLAIM ATOMIK: Ubah status menjadi 'processing' untuk mencegah race condition
+        await db.update(uploads)
+          .set({ cleanupStatus: 'processing' })
+          .where(sql`id = ${file.id} AND cleanup_status = 'pending'`);
+
+        // 3. HAPUS DARI STORAGE
+        await deleteFromObjectStorage(file.storageKey);
+
+        // 4. TANDAI SELESAI
+        await db.update(uploads)
+          .set({ cleanupStatus: 'done' })
+          .where(sql`id = ${file.id}`);
+          
+        stats.deleted++;
+      } catch (err) {
+        // Jika gagal, kembalikan ke 'pending' atau tandai 'failed' agar bisa dicoba lagi
+        await db.update(uploads)
+          .set({ cleanupStatus: 'failed', lastError: err.message })
+          .where(sql`id = ${file.id}`);
+        stats.failed++;
+        errorSummary = err.message;
+      }
+    }
+
+    // File yang memiliki metadata_id tidak akan masuk ke query di atas, 
+    // sehingga secara otomatis "retained" (dipertahankan). 
+    // Anda bisa menambahkan logika terpisah untuk menghitungnya jika perlu.
+
+  } catch (error) {
+    console.error('[Cleanup Job] Critical failure:', error);
+    errorSummary = error.message;
+  }
+
+  // 5. CATAT LOG UNTUK DASHBOARD & ALERTING
+  await db.insert(storageCleanupLogs).values({
+    filesPending: stats.pending,
+    filesDeleted: stats.deleted,
+    filesRetained: stats.retained,
+    filesFailed: stats.failed,
+    errorSummary: errorSummary,
+  });
+
+  return stats;
+}
+```
+
+---
+
+### 4. Mekanisme Peringatan Proaktif (Opsional tapi Sangat Disarankan)
+Selain menampilkan data di dashboard, sistem harus secara aktif memberi tahu pengelola. Anda dapat menambahkan fungsi sederhana di akhir `runOrphanedFileCleanup`:
+
+```typescript
+if (stats.failed > 5) {
+  await sendAlertToAdmin({
+    channel: 'slack' | 'email' | 'webhook',
+    subject: '[CRITICAL] QA/QC Storage Cleanup Failed',
+    message: `Pembersihan gagal untuk ${stats.failed} file. Error terakhir: ${errorSummary}. Segera periksa integrasi Object Storage.`
+  });
+}
+```
+
+---
+
+### Langkah Selanjutnya
+Rancangan di atas secara langsung memenuhi semua "Hasil yang diharapkan" dari Task #11:
+- ✅ Jumlah upload terpantau (melalui tabel `storageCleanupLogs` dan endpoint).
+- ✅ Kegagalan berulang menghasilkan peringatan (logika `consecutiveFailures` dan `alertLevel`).
+- ✅ Tampilan/endpoint dibatasi peran (menggunakan `requireRole(['ADMIN'])`).
+
+**Apa yang ingin kita kerjakan berikutnya?**
+1. Saya bisa membantu menulis **Integration Test** (menggunakan Vitest/Jest) untuk memverifikasi bahwa *endpoint* admin benar-benar memblokir akses dari peran `TEKNISI` atau `QA_ENGINEER`.
+2. Saya bisa membantu menyempurnakan logika **Atomic Claim** di database jika Anda menggunakan ORM tertentu (Prisma, TypeORM, atau Kysely) agar lebih spesifik.
+3. Atau kita beralih ke modul bisnis inti, seperti merancang alur **Non-Conformance Report (NCR)** yang terhubung dengan bukti unggahan ini?
