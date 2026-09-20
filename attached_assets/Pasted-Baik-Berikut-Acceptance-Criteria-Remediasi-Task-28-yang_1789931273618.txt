@@ -1,0 +1,142 @@
+Baik. Berikut **Acceptance Criteria Remediasi Task #28** yang disusun berdasarkan urutan perbaikan yang Anda sarankan. Kriteria ini dirancang agar dapat diverifikasi secara objektif saat review ulang, tanpa menyentuh kode atau Task #30.
+
+---
+
+## Acceptance Criteria Remediasi Task #28
+
+### AC-1: Hasil Cleanup Tidak Terpengaruh Kegagalan Pencatatan Event
+
+**Tujuan:** Operasi cleanup yang berhasil menghapus object tidak boleh berubah menjadi kegagalan palsu hanya karena `recordOutcome()` gagal.
+
+**Kriteria:**
+- Jika object berhasil dihapus dari storage tetapi `recordOutcome()` gagal, operasi tetap dicatat sebagai **berhasil** dalam statistik dan notifikasi.
+- Kegagalan `recordOutcome()` dicatat sebagai **warning observabilitas**, bukan kegagalan cleanup.
+- Sistem tidak mencoba melepas claim dari baris yang sudah dihapus.
+- Tidak ada retry atau pencatatan event kedua yang dipicu oleh kegagalan ini.
+
+**Test yang diperlukan:**
+- Mock `recordOutcome()` untuk selalu gagal setelah object berhasil dihapus.
+- Verifikasi statistik menampilkan `deleted: 1, failed: 0`.
+- Verifikasi tidak ada error log yang menyatakan cleanup gagal.
+- Verifikasi claim tidak di-release dua kali.
+
+---
+
+### AC-2: Error Backend Disanitasi Sebelum Disimpan atau Dikirim
+
+**Tujuan:** Pesan error yang disimpan di database atau dikirim ke frontend tidak boleh mengandung informasi sensitif.
+
+**Kriteria:**
+- Error message yang disimpan di `errorMessage` kolom tabel event **tidak mengandung**:
+  - URL provider (S3, GCS, Azure Blob, dll)
+  - Bucket name atau object path privat
+  - Query parameter dengan token atau signature
+  - Credential fragment (access key, secret key, token)
+  - Stack trace atau detail internal
+- Sanitasi dilakukan **sebelum** insert ke database, bukan hanya di endpoint response.
+- Pemotongan panjang (500 karakter) **bukan** sanitasi dan harus dihapus atau dilengkapi dengan filter pola.
+- Endpoint API mengembalikan pesan yang sudah disanitasi.
+
+**Test yang diperlukan:**
+- Mock error dengan berbagai pola sensitif (URL S3 dengan signature, stack trace, credential).
+- Verifikasi pesan yang disimpan di database tidak mengandung pola tersebut.
+- Verifikasi endpoint API mengembalikan pesan yang sama.
+- Verifikasi pesan yang disanitasi masih informatif untuk QA Engineer (misalnya: "Storage connection timeout" bukan "S3 bucket xyz path abc error").
+
+---
+
+### AC-3: Deduplikasi Notifikasi Di-scope per Proyek dan Pengguna
+
+**Tujuan:** Notifikasi tidak bocor lintas proyek, pengguna, atau sesi.
+
+**Kriteria:**
+- Key localStorage untuk deduplikasi menggunakan kombinasi **userId + projectId + uploadId** (minimal).
+- Perpindahan proyek **tidak** menimpa state proyek sebelumnya.
+- Logout/login **mereset** atau **mengisolasi** state dengan benar.
+- Akun berbeda pada browser yang sama **tidak** berbagi state deduplikasi.
+- Jika localStorage rusak atau tidak tersedia, sistem fallback ke perilaku aman (tidak crash, tidak mengirim notifikasi ganda).
+
+**Test yang diperlukan:**
+- Login sebagai User A di Project 1, trigger notifikasi.
+- Switch ke Project 2, verifikasi notifikasi Project 1 tidak muncul.
+- Login sebagai User B di Project 1, verifikasi notifikasi User A tidak muncul.
+- Logout dan login kembali, verifikasi state terisolasi.
+- Mock localStorage error, verifikasi sistem tidak crash.
+
+**Opsional (untuk ketahanan lintas perangkat):**
+- Pindahkan state deduplikasi ke server (tabel `notified_uploads` dengan unique constraint `userId + projectId + uploadId`).
+- Ini akan ditangani di iterasi berikutnya jika diperlukan.
+
+---
+
+### AC-4: State Recovery Eksplisit dan Definitif
+
+**Tujuan:** Respons kosong sementara atau error API tidak dianggap sebagai recovery.
+
+**Kriteria:**
+- State lokal memiliki minimal tiga nilai: `active`, `recovered`, `untrusted`.
+- `active`: ada kegagalan berulang yang belum pulih.
+- `recovered`: server secara eksplisit menyatakan recovery (misalnya field `recoveredAt` atau `status: 'recovered'`).
+- `untrusted`: respons API error, timeout, atau parsial — state tidak berubah.
+- Respons kosong (`repeatedFailures: []`) **tidak** langsung mengubah state menjadi `recovered` kecuali ada penanda eksplisit dari server.
+- Toast `RECOVERED` opsional — jika ditampilkan, harus berdasarkan state `recovered` definitif, bukan respons kosong.
+
+**Test yang diperlukan:**
+- Trigger notifikasi WARNING, verifikasi state `active`.
+- Server mengembalikan `repeatedFailures: []` tanpa penanda recovery, verifikasi state tetap `active` atau berubah ke `untrusted`.
+- Server mengembalikan `status: 'recovered'` atau `recoveredAt: timestamp`, verifikasi state berubah ke `recovered`.
+- API error (500, timeout), verifikasi state tidak berubah.
+- Respons parsial (field hilang), verifikasi state tidak berubah.
+
+---
+
+### AC-5: Pengujian Diperluas untuk Cakupan Kritis
+
+**Tujuan:** Test coverage mencakup skenario lintas proyek, konkurensi, dan edge case sanitasi.
+
+**Kriteria:**
+- **Dua proyek:** verifikasi deduplikasi terisolasi per proyek.
+- **Dua pengguna:** verifikasi deduplikasi terisolasi per pengguna.
+- **Dua notifier aktif:** verifikasi tidak ada toast ganda dari instance berbeda.
+- **Error API:** verifikasi state tidak berubah dan tidak ada toast palsu.
+- **Respons parsial:** verifikasi sistem tidak crash dan state tetap aman.
+- **Recovery definitif:** verifikasi state berubah hanya dengan penanda eksplisit.
+- **Sanitasi error:** verifikasi berbagai pola sensitif dibersihkan.
+- **Cleanup berhasil, pencatatan event gagal:** verifikasi statistik tetap benar.
+
+**Test yang diperlukan:**
+- Minimal 10 test baru mencakup skenario di atas.
+- Semua test harus pass di CI.
+- Coverage tidak boleh turun dari baseline.
+
+---
+
+## Batas Cakupan Task #28
+
+**Masuk Task #28:**
+- AC-1 hingga AC-5 di atas.
+
+**Tidak masuk Task #28 (ditangani task lain):**
+- **Task #46:** Ketahanan notifikasi saat aplikasi tidak aktif (background sync, queue, retry).
+- **Task #47:** Navigasi dari notifikasi ke rincian masalah.
+- **Task #30:** Retensi backlog riwayat (sedang dikerjakan, tidak disentuh).
+- **Iterasi berikutnya:** Pindahkan state deduplikasi ke server untuk ketahanan lintas perangkat.
+
+---
+
+## Checklist Review Ulang
+
+Setelah remediasi selesai, review akan memverifikasi:
+
+- [ ] AC-1: Cleanup berhasil tidak terpengaruh kegagalan pencatatan event
+- [ ] AC-2: Error backend disanitasi sebelum disimpan/dikirim
+- [ ] AC-3: Deduplikasi terisolasi per proyek dan pengguna
+- [ ] AC-4: State recovery eksplisit dan definitif
+- [ ] AC-5: Test coverage mencakup skenario kritis
+- [ ] Tidak ada regresi pada fitur yang sudah ada
+- [ ] Task #30 tidak disentuh
+- [ ] Task #46 dan #47 tidak dicampurkan
+
+---
+
+Rencana ini siap digunakan sebagai acuan remediasi. Tidak ada tindakan kode yang dilakukan sekarang. Silakan beri tahu saya jika ada penyesuaian yang diperlukan.
