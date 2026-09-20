@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import {
+  attachmentUploadsTable,
   auditEventsTable,
   db,
   projectInvitationsTable,
@@ -39,6 +40,7 @@ import {
 } from "../lib/project-access";
 import {
   attachmentObject,
+  ATTACHMENT_UPLOAD_GRACE_PERIOD_MS,
   createAttachmentUploadUrl,
   isAllowedAttachmentType,
   MAX_ATTACHMENT_SIZE,
@@ -212,6 +214,14 @@ router.post("/workspace/:collection/:id/attachments/upload-url", async (req, res
     return;
   }
   const upload = await createAttachmentUploadUrl();
+  await db.insert(attachmentUploadsTable).values({
+    projectId: access.project.id,
+    recordId: params.data.id,
+    recordType: params.data.collection,
+    objectPath: upload.objectPath,
+    requestedBy: access.user.id,
+    expiresAt: new Date(Date.now() + ATTACHMENT_UPLOAD_GRACE_PERIOD_MS),
+  });
   res.json(RequestRecordAttachmentUploadResponse.parse(upload));
 });
 
@@ -249,10 +259,21 @@ router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<
     !isAllowedAttachmentType(actualContentType)
   ) {
     await object.delete({ ignoreNotFound: true });
+    await db.delete(attachmentUploadsTable)
+      .where(eq(attachmentUploadsTable.objectPath, body.data.objectPath));
     res.status(400).json({ error: "Isi file tidak sesuai metadata atau melebihi batas 25 MB." });
     return;
   }
-  const [attachment] = await db.transaction(async (tx) => {
+  const attachment = await db.transaction(async (tx) => {
+    const [claimedUpload] = await tx.delete(attachmentUploadsTable).where(and(
+      eq(attachmentUploadsTable.objectPath, body.data.objectPath),
+      eq(attachmentUploadsTable.projectId, access.project.id),
+      eq(attachmentUploadsTable.recordId, params.data.id),
+      eq(attachmentUploadsTable.recordType, params.data.collection),
+      isNull(attachmentUploadsTable.cleanupStartedAt),
+    )).returning({ id: attachmentUploadsTable.id });
+    if (!claimedUpload) return null;
+
     const inserted = await tx.insert(recordAttachmentsTable).values({
       projectId: access.project.id,
       recordId: params.data.id,
@@ -272,8 +293,12 @@ router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<
       subject: body.data.fileName,
       after: { attachmentId: inserted[0].id, fileName: body.data.fileName, size: body.data.size },
     });
-    return inserted;
+    return inserted[0];
   });
+  if (!attachment) {
+    res.status(409).json({ error: "Sesi unggah sudah kedaluwarsa atau telah diproses." });
+    return;
+  }
   res.status(201).json(CreateRecordAttachmentResponse.parse({
     id: attachment.id,
     fileName: attachment.fileName,

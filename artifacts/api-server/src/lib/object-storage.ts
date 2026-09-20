@@ -1,8 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { Storage, type File } from "@google-cloud/storage";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
+import {
+  attachmentUploadsTable,
+  db,
+  recordAttachmentsTable,
+} from "@workspace/db";
+import { logger } from "./logger";
 
 const sidecar = "http://127.0.0.1:1106";
 export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
+export const ATTACHMENT_UPLOAD_GRACE_PERIOD_MS = 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+const CLEANUP_CLAIM_TIMEOUT_MS = 30 * 60 * 1000;
+const CLEANUP_BATCH_SIZE = 100;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -71,6 +82,84 @@ export async function createAttachmentUploadUrl() {
   if (!response.ok) throw new Error(`Failed to sign upload URL (${response.status})`);
   const body = await response.json() as { signed_url: string };
   return { uploadURL: body.signed_url, objectPath };
+}
+
+export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
+  const staleClaimBefore = new Date(now.getTime() - CLEANUP_CLAIM_TIMEOUT_MS);
+  const candidates = await db.select({
+    id: attachmentUploadsTable.id,
+    objectPath: attachmentUploadsTable.objectPath,
+  }).from(attachmentUploadsTable).where(and(
+    or(
+      isNull(attachmentUploadsTable.cleanupStartedAt),
+      lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
+    ),
+    lt(attachmentUploadsTable.expiresAt, now),
+  )).limit(CLEANUP_BATCH_SIZE);
+
+  let deleted = 0;
+  let preserved = 0;
+  let failed = 0;
+
+  for (const candidate of candidates) {
+    try {
+      const [claimed] = await db.update(attachmentUploadsTable)
+        .set({ cleanupStartedAt: now })
+        .where(and(
+          eq(attachmentUploadsTable.id, candidate.id),
+          or(
+            isNull(attachmentUploadsTable.cleanupStartedAt),
+            lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
+          ),
+        ))
+        .returning({ id: attachmentUploadsTable.id });
+      if (!claimed) {
+        preserved += 1;
+        continue;
+      }
+
+      const [attachment] = await db.select({ id: recordAttachmentsTable.id })
+        .from(recordAttachmentsTable)
+        .where(eq(recordAttachmentsTable.objectPath, candidate.objectPath))
+        .limit(1);
+
+      if (attachment) {
+        await db.delete(attachmentUploadsTable)
+          .where(eq(attachmentUploadsTable.id, candidate.id));
+        preserved += 1;
+        continue;
+      }
+
+      await attachmentObject(candidate.objectPath).delete({ ignoreNotFound: true });
+      await db.delete(attachmentUploadsTable)
+        .where(eq(attachmentUploadsTable.id, candidate.id));
+      deleted += 1;
+    } catch (err) {
+      failed += 1;
+      await db.update(attachmentUploadsTable)
+        .set({ cleanupStartedAt: null })
+        .where(eq(attachmentUploadsTable.id, candidate.id))
+        .catch((resetErr) => {
+          logger.error({ err: resetErr, uploadId: candidate.id }, "Failed to release attachment cleanup claim");
+        });
+      logger.error({ err, uploadId: candidate.id }, "Failed to clean orphaned attachment upload");
+    }
+  }
+
+  const result = { scanned: candidates.length, deleted, preserved, failed };
+  logger.info(result, "Finished orphaned attachment upload cleanup");
+  return result;
+}
+
+export function startAttachmentUploadCleanup() {
+  const run = () => {
+    cleanupOrphanedAttachmentUploads().catch((err) => {
+      logger.error({ err }, "Orphaned attachment upload cleanup failed");
+    });
+  };
+  run();
+  const timer = setInterval(run, CLEANUP_INTERVAL_MS);
+  timer.unref();
 }
 
 export async function streamAttachment(file: File, res: import("express").Response, fileName: string) {

@@ -1,0 +1,1 @@
+- [Drizzle push in non-interactive shells](drizzle-push-noninteractive.md) — column-conflict prompts can block even force mode; use narrowly scoped SQL, then verify schema convergence.

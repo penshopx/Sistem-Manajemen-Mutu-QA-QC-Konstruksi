@@ -118,6 +118,24 @@ export const recordAttachmentsTable = pgTable(
   ],
 );
 
+export const attachmentUploadsTable = pgTable(
+  "qaqc_attachment_uploads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id").notNull(),
+    recordId: text("record_id").notNull(),
+    recordType: recordTypeEnum("record_type").notNull(),
+    objectPath: text("object_path").notNull().unique(),
+    requestedBy: uuid("requested_by").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    cleanupStartedAt: timestamp("cleanup_started_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("qaqc_attachment_uploads_cleanup_idx").on(table.cleanupStartedAt, table.expiresAt),
+  ],
+);
+
 export const auditEventsTable = pgTable(
   "audit_events",
   {
