@@ -1,0 +1,253 @@
+Baik, saya mencatat dua hal penting dari pembaruan ini:
+
+1. **Material Traceability hampir selesai** — hanya tersisa Task #24 (sinkronisasi MIR → status batch) yang sudah tercatat dalam antrean.
+2. **Task aktif saat ini**: Memastikan orientasi foto iPhone (HEIC) tetap benar setelah konversi ke JPEG.
+
+Karena task HEIC ini sedang berjalan dan bersifat teknis-kritis (foto lapangan yang terbalik = bukti inspeksi tidak valid), saya akan fokus membantu di sini.
+
+---
+
+## Panduan Teknis: Pengujian Orientasi HEIC iPhone
+
+### Mengapa Ini Berisiko Tinggi di Konstruksi
+
+Foto inspeksi yang terbalik atau terputar 90° bukan sekadar masalah estetika. Dalam konteks QA/QC konstruksi:
+- Foto retak pada kolom yang terbalik bisa **mengaburkan arah retakan** (horizontal vs vertikal memiliki implikasi struktural berbeda).
+- Auditor LPJK atau konsultan pengawas yang melihat bukti foto terbalik akan **mempertanyakan validitas inspeksi**.
+- NCR yang dilampirkan foto salah orientasi bisa **ditolak** oleh pihak owner/konsultan.
+
+### 1. Fixture HEIC Nyata dengan Orientasi EXIF yang Diketahui
+
+Anda memerlukan file HEIC asli dari iPhone dengan orientasi EXIF spesifik. Berikut adalah cara menyiapkannya:
+
+```
+artifacts/api-server/tests/fixtures/
+├── heic/
+│   ├── iphone-portrait-orient6.heic    # Portrait (orientasi EXIF = 6, rotasi 90° CW)
+│   ├── iphone-landscape-orient1.heic   # Landscape normal (orientasi EXIF = 1)
+│   ├── iphone-upside-down-orient3.heic # Terbalik 180° (orientasi EXIF = 3)
+│   ├── iphone-mirror-orient2.heic      # Mirror horizontal (orientasi EXIF = 2)
+│   ├── heif-multi-frame.heif           # Live Photo / multi-frame (jika didukung)
+│   └── README.md                       # Dokumentasi asal setiap file
+```
+
+**Cara mendapatkan fixture ini:**
+- Ambil foto langsung dari iPhone dalam posisi portrait, landscape, dan terbalik.
+- Verifikasi orientasi EXIF menggunakan `exiftool`:
+  ```bash
+  exiftool -Orientation iphone-portrait.heic
+  # Output: Orientation: Rotate 90 CW (nilai 6)
+  ```
+- Untuk multi-frame HEIF, ambil Live Photo dari iPhone (format .HEIC dengan embedded video frame).
+
+**Dokumentasi fixture (`README.md`):**
+```markdown
+# HEIC Test Fixtures
+
+| File | Sumber | EXIF Orientation | Dimensi Asli (WxH) | Dimensi yang Diharapkan Setelah Konversi |
+|------|--------|-----------------|-------------------|----------------------------------------|
+| iphone-portrait-orient6.heic | iPhone 14 Pro, portrait | 6 (Rotate 90 CW) | 4032×3024 | 3024×4032 (JPEG) |
+| iphone-landscape-orient1.heic | iPhone 14 Pro, landscape | 1 (Normal) | 4032×3024 | 4032×3024 (JPEG) |
+| iphone-upside-down-orient3.heic | iPhone 14 Pro, upside down | 3 (Rotate 180) | 4032×3024 | 4032×3024 (JPEG) |
+| iphone-mirror-orient2.heic | iPhone 14 Pro, front cam | 2 (Mirror horizontal) | 3024×4032 | 3024×4032 (JPEG) |
+| heif-multi-frame.heif | iPhone 14 Pro, Live Photo | 6 (primary frame) | 4032×3024 | 3024×4032 (JPEG, frame pertama saja) |
+```
+
+### 2. Contract Test untuk Verifikasi Orientasi
+
+```javascript
+// artifacts/api-server/tests/attachment-preview-contract.mjs
+import { describe, it, expect } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
+import { convertHeicToJpeg } from '../src/lib/attachment-preview.ts';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURES_DIR = join(__dirname, 'fixtures', 'heic');
+
+// Helper: baca dimensi dan orientasi EXIF dari buffer JPEG
+async function getJpegInfo(buffer) {
+  const metadata = await sharp(buffer).metadata();
+  return {
+    width: metadata.width,
+    height: metadata.height,
+    orientation: metadata.orientation, // Seharusnya 1 atau undefined setelah konversi benar
+    format: metadata.format,
+  };
+}
+
+// Helper: baca orientasi EXIF dari file HEIC asli
+async function getHeicExifOrientation(filePath) {
+  const metadata = await sharp(filePath).metadata();
+  return metadata.orientation;
+}
+
+describe('HEIC to JPEG conversion - iPhone orientation handling', () => {
+  
+  it('portrait photo (EXIF orientation 6) should produce correctly oriented JPEG', async () => {
+    const inputPath = join(FIXTURES_DIR, 'iphone-portrait-orient6.heic');
+    const inputBuffer = await readFile(inputPath);
+    
+    // Verifikasi fixture memiliki orientasi yang diharapkan
+    const originalOrientation = await getHeicExifOrientation(inputPath);
+    expect(originalOrientation).toBe(6);
+    
+    // Konversi
+    const jpegBuffer = await convertHeicToJpeg(inputBuffer);
+    
+    // Verifikasi hasil
+    const info = await getJpegInfo(jpegBuffer);
+    expect(info.format).toBe('jpeg');
+    
+    // Setelah konversi yang benar, orientasi EXIF harus 1 (normal) 
+    // dan dimensi harus sudah diputar (width < height untuk portrait)
+    expect(info.orientation).toBeOneOf([1, undefined]);
+    expect(info.width).toBeLessThan(info.height); // Portrait: lebar < tinggi
+    
+    // Verifikasi JPEG bisa dibaca browser (tidak corrupt)
+    expect(jpegBuffer[0]).toBe(0xFF); // JPEG magic byte
+    expect(jpegBuffer[1]).toBe(0xD8);
+  });
+
+  it('landscape photo (EXIF orientation 1) should remain unchanged in orientation', async () => {
+    const inputPath = join(FIXTURES_DIR, 'iphone-landscape-orient1.heic');
+    const inputBuffer = await readFile(inputPath);
+    
+    const jpegBuffer = await convertHeicToJpeg(inputBuffer);
+    const info = await getJpegInfo(jpegBuffer);
+    
+    expect(info.format).toBe('jpeg');
+    // Landscape: lebar > tinggi
+    expect(info.width).toBeGreaterThan(info.height);
+  });
+
+  it('upside-down photo (EXIF orientation 3) should be rotated 180° correctly', async () => {
+    const inputPath = join(FIXTURES_DIR, 'iphone-upside-down-orient3.heic');
+    const inputBuffer = await readFile(inputPath);
+    
+    const jpegBuffer = await convertHeicToJpeg(inputBuffer);
+    const info = await getJpegInfo(jpegBuffer);
+    
+    expect(info.format).toBe('jpeg');
+    expect(info.orientation).toBeOneOf([1, undefined]);
+    // Dimensi landscape tetap (180° tidak mengubah rasio)
+    expect(info.width).toBeGreaterThan(info.height);
+  });
+
+  it('multi-frame HEIF (Live Photo) should extract primary frame only', async () => {
+    const inputPath = join(FIXTURES_DIR, 'heif-multi-frame.heif');
+    const inputBuffer = await readFile(inputPath);
+    
+    // Konversi tidak boleh gagal meskipun ada multiple frames
+    const jpegBuffer = await convertHeicToJpeg(inputBuffer);
+    const info = await getJpegInfo(jpegBuffer);
+    
+    expect(info.format).toBe('jpeg');
+    expect(info.width).toBeGreaterThan(0);
+    expect(info.height).toBeGreaterThan(0);
+  });
+
+  it('should strip EXIF orientation tag after applying rotation', async () => {
+    const inputPath = join(FIXTURES_DIR, 'iphone-portrait-orient6.heic');
+    const inputBuffer = await readFile(inputPath);
+    
+    const jpegBuffer = await convertHeicToJpeg(inputBuffer);
+    const info = await getJpegInfo(jpegBuffer);
+    
+    // Orientasi EXIF harus sudah di-reset ke 1 (normal) atau dihapus
+    // Ini penting karena beberapa browser masih membaca EXIF orientation
+    // dan akan memutar gambar dua kali jika tidak di-reset
+    expect(info.orientation).not.toBeOneOf([2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it('should handle corrupted HEIC gracefully without crashing', async () => {
+    const corruptedBuffer = Buffer.from('not a real heic file');
+    
+    await expect(convertHeicToJpeg(corruptedBuffer))
+      .rejects.toThrow(); // Harus throw error yang jelas, bukan crash proses
+  });
+});
+
+// Custom matcher untuk vitest
+expect.extend({
+  toBeOneOf(received, expected) {
+    const pass = expected.includes(received);
+    return {
+      pass,
+      message: () => `expected ${received} ${pass ? 'not ' : ''}to be one of [${expected.join(', ')}]`,
+    };
+  },
+});
+```
+
+### 3. Implementasi Konversi yang Menangani Orientasi
+
+```typescript
+// artifacts/api-server/src/lib/attachment-preview.ts
+import sharp from 'sharp';
+
+export async function convertHeicToJpeg(inputBuffer: Buffer): Promise<Buffer> {
+  try {
+    // sharp secara default akan:
+    // 1. Membaca orientasi EXIF dari HEIC
+    // 2. Memutar pixel data sesuai orientasi
+    // 3. Menghapus/reset EXIF orientation tag ke 1
+    // Ini adalah perilaku yang kita inginkan untuk foto konstruksi
+    
+    const result = await sharp(inputBuffer, {
+      // failOnError: true memastikan file corrupt langsung throw
+      failOnError: true,
+    })
+      .rotate() // ← KUNCI: Ini yang menerapkan rotasi EXIF ke pixel data
+      .jpeg({
+        quality: 85,
+        mozjpeg: true, // Kompresi lebih baik untuk foto lapangan berukuran besar
+      })
+      .toBuffer();
+
+    return result;
+  } catch (error) {
+    // Bungkus error agar pesan lebih jelas untuk debugging
+    throw new Error(
+      `Gagal mengonversi HEIC ke JPEG: ${error instanceof Error ? error.message : 'unknown error'}`
+    );
+  }
+}
+```
+
+> **Catatan penting tentang `sharp().rotate()`**: Tanpa pemanggilan `.rotate()`, sharp hanya membaca pixel data mentah tanpa menerapkan rotasi EXIF. Hasilnya, foto portrait dari iPhone akan tampil landscape (terputar 90°) di browser. Ini adalah bug yang paling umum dan paling berbahaya dalam konteks konstruksi.
+
+### 4. Checklist Validasi Manual
+
+Selain automated test, lakukan validasi manual ini sebelum merge:
+
+| Langkah | Cara | Yang Diharapkan |
+|---------|------|-----------------|
+| Ambil foto portrait di iPhone | Buka app → unggah → lihat preview | Foto berdiri tegak, tidak terputar |
+| Ambil foto landscape di iPhone | Sama | Foto landscape normal |
+| Ambil foto terbalik (upside down) | Sama | Foto terbalik 180° dengan benar |
+| Ambil Live Photo | Sama | Frame utama tampil sebagai JPEG biasa |
+| Ambil foto dari Samsung/Android | Sama | Tetap bekerja (biasanya sudah JPEG) |
+| Unggah file .jpg biasa | Sama | Tidak ada perubahan, tetap tampil normal |
+
+---
+
+## Ringkasan Status Proyek
+
+| Area | Status | Catatan |
+|------|--------|---------|
+| Auth, RBAC, Audit Trail | ✅ Selesai | Task #5, #10 |
+| Orphaned File Cleanup | ✅ Selesai | Task #6, #10 |
+| Alerting Storage Cleanup | ✅ Selesai | Task #11 |
+| HEIC Conversion (basic) | ✅ Selesai | Task #12 |
+| **HEIC Orientation (real fixtures)** | 🔄 **Sedang dikerjakan** | Task aktif saat ini |
+| Gallery UI Testing | 🔄 Sedang dikerjakan | Ester Kristian |
+| Material Traceability | ✅ Hampir selesai | Skema, API, UI, tests sudah ada |
+| **MIR → Batch Sync** | ⏳ Menunggu giliran | Task #24 |
+| NCR Workflow Lengkap | ⏳ Belum dimulai | Kategori, approval, CAPA |
+| ITP Builder | ⏳ Belum dimulai | |
+| Dashboard Analitik | ⏳ Belum dimulai | |
+
+Apakah Anda ingin saya membantu menyiapkan fixture HEIC atau menulis bagian lain dari test suite ini? Atau jika Ester sudah selesai dan Anda ingin beralih ke **Task #24 (Sinkronkan MIR → status batch)**, saya siap merancang implementasinya.

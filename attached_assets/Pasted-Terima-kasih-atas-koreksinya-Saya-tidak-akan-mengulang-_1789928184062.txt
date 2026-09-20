@@ -1,0 +1,307 @@
+Terima kasih atas koreksinya. Saya tidak akan mengulang rancangan Material Traceability karena sudah lengkap. Mari kita fokus pada dua task yang benar-benar aktif:
+
+---
+
+## Task #24: Sinkronkan Hasil MIR ke Status Batch Material
+
+Ini adalah potongan terakhir dari alur Material Traceability. Implementasinya paling aman dilakukan di **application layer** (bukan database trigger) agar tetap terintegrasi dengan audit trail dan RBAC yang sudah ada.
+
+### Implementasi
+
+```typescript
+// artifacts/api-server/src/services/mir-sync.ts
+import { db } from '../lib/db';
+import { materialBatches, inspections } from '../../lib/db/schema/qaqc';
+import { eq, and } from 'drizzle-orm';
+
+export type MIRResult = 'approved' | 'rejected' | 'conditional';
+
+/**
+ * Sinkronkan hasil Material Inspection Request (MIR) ke status batch material.
+ * Dipanggil setelah MIR disetujui/ditolak oleh QA Engineer.
+ * 
+ * Aturan bisnis:
+ * - approved   → batch.inspectionStatus = 'approved', material boleh dipakai
+ * - rejected   → batch.inspectionStatus = 'rejected', material dikarantina
+ * - conditional → batch.inspectionStatus = 'conditional', perlu inspeksi ulang
+ */
+export async function syncMIRResultToBatch(params: {
+  inspectionId: number;
+  projectId: string;
+  result: MIRResult;
+  userId: string;
+}): Promise<void> {
+  const { inspectionId, projectId, result, userId } = params;
+
+  // 1. Ambil inspeksi untuk menemukan batch yang terkait
+  const inspection = await db.query.inspections.findFirst({
+    where: and(
+      eq(inspections.id, inspectionId),
+      eq(inspections.projectId, projectId),
+      eq(inspections.type, 'MATERIAL_INSPECTION')
+    ),
+  });
+
+  if (!inspection || !inspection.relatedBatchId) {
+    // Bukan MIR atau tidak terkait batch — skip tanpa error
+    return;
+  }
+
+  // 2. Baca status sebelum perubahan (untuk audit trail)
+  const [batchBefore] = await db.select()
+    .from(materialBatches)
+    .where(eq(materialBatches.id, inspection.relatedBatchId));
+
+  if (!batchBefore) return;
+
+  // 3. Update status batch secara atomik dalam transaksi
+  await db.transaction(async (tx) => {
+    const [batchAfter] = await tx.update(materialBatches)
+      .set({
+        inspectionStatus: result,
+        lastInspectedAt: new Date(),
+        lastInspectedBy: userId,
+      })
+      .where(eq(materialBatches.id, inspection.relatedBatchId))
+      .returning();
+
+    // 4. Catat audit trail
+    await tx.insert(auditLogs).values({
+      projectId,
+      userId,
+      action: 'SYNC_MIR_TO_BATCH',
+      recordType: 'material_batch',
+      recordId: batchAfter.id,
+      before: { inspectionStatus: batchBefore.inspectionStatus },
+      after: { inspectionStatus: batchAfter.inspectionStatus },
+    });
+
+    // 5. Jika rejected, blokir penggunaan material di inventori
+    if (result === 'rejected') {
+      await tx.update(materialInventory)
+        .set({ isQuarantined: true })
+        .where(eq(materialInventory.batchId, inspection.relatedBatchId));
+    }
+  });
+}
+```
+
+### Hook ke Endpoint MIR yang Sudah Ada
+
+```typescript
+// artifacts/api-server/src/routes/inspections.ts
+// Tambahkan ke endpoint approve/reject MIR yang sudah ada:
+
+import { syncMIRResultToBatch } from '../services/mir-sync';
+
+router.post('/projects/:projectId/inspections/:inspectionId/resolve', 
+  requireAuth,
+  requireRole(['QA_ENGINEER', 'QA_ENGINEER_MADYA', 'QA_MANAGER']),
+  async (req, res) => {
+    const { projectId, inspectionId } = req.params;
+    const { result, notes } = req.body; // result: 'approved' | 'rejected' | 'conditional'
+    const userId = req.auth.userId;
+
+    try {
+      // ... logika approval MIR yang sudah ada ...
+
+      // Sinkronisasi ke batch material (Task #24)
+      await syncMIRResultToBatch({
+        inspectionId: parseInt(inspectionId),
+        projectId,
+        result,
+        userId,
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Gagal memproses MIR' });
+    }
+  }
+);
+```
+
+### Integration Test untuk Task #24
+
+```typescript
+// artifacts/api-server/tests/mir-batch-sync.test.mjs
+import { describe, it, expect } from 'vitest';
+
+describe('MIR → Batch Sync', () => {
+  it('menyetujui MIR mengubah status batch menjadi approved', async () => {
+    // Setup: buat batch dengan status 'pending' dan MIR terkait
+    const batch = await createTestBatch({ inspectionStatus: 'pending' });
+    const mir = await createTestMIR({ relatedBatchId: batch.id });
+
+    // Act: QA Engineer menyetujui MIR
+    await request(app)
+      .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+      .set('Authorization', `Bearer ${qaEngineerToken}`)
+      .send({ result: 'approved' });
+
+    // Assert: batch status berubah
+    const updatedBatch = await getBatch(batch.id);
+    expect(updatedBatch.inspectionStatus).toBe('approved');
+
+    // Assert: audit trail tercatat
+    const audit = await getLatestAudit('material_batch', batch.id);
+    expect(audit.action).toBe('SYNC_MIR_TO_BATCH');
+    expect(audit.before).toEqual({ inspectionStatus: 'pending' });
+    expect(audit.after).toEqual({ inspectionStatus: 'approved' });
+  });
+
+  it('menolak MIR mengarantina inventori batch', async () => {
+    const batch = await createTestBatch({ inspectionStatus: 'pending' });
+    const mir = await createTestMIR({ relatedBatchId: batch.id });
+
+    await request(app)
+      .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+      .set('Authorization', `Bearer ${qaEngineerToken}`)
+      .send({ result: 'rejected' });
+
+    const inventory = await getInventory(batch.id);
+    expect(inventory.isQuarantined).toBe(true);
+  });
+
+  it('teknisi tidak bisa menyetujui MIR', async () => {
+    const mir = await createTestMIR();
+
+    const res = await request(app)
+      .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+      .set('Authorization', `Bearer ${teknisiToken}`)
+      .send({ result: 'approved' });
+
+    expect(res.status).toBe(403);
+  });
+});
+```
+
+---
+
+## Task Aktif Ester: Orientasi Foto iPhone (HEIC)
+
+Ini adalah masalah klasik yang sering terlewat. Berikut panduan teknis untuk membantu Ester menyelesaikan task ini:
+
+### Masalah Inti
+
+iPhone menyimpan foto HEIC dengan **orientasi EXIF** (flag rotasi di metadata), bukan rotasi pixel aktual. Saat dikonversi ke JPEG:
+- Jika EXIF di-*strip* tanpa *bake rotation* → foto terbalik/miring.
+- Jika EXIF dipertahankan tapi browser tidak membacanya → foto tetap terbalik.
+- Live Photos menghasilkan HEIF **multi-frame** → konverter bisa gagal atau mengambil frame yang salah.
+
+### Solusi dengan `sharp`
+
+```typescript
+// artifacts/api-server/src/lib/attachment-preview.ts
+import sharp from 'sharp';
+
+export async function convertHeicToJpeg(inputBuffer: Buffer): Promise<Buffer> {
+  return sharp(inputBuffer)
+    .rotate()           // ← KUNCI: auto-rotate berdasarkan EXIF orientation
+    .withMetadata({     // ← Pertahankan EXIF yang sudah di-bake
+      orientation: undefined  // Hapus flag orientasi karena sudah di-rotate
+    })
+    .jpeg({ quality: 85, mozjpeg: true })
+    .toBuffer();
+}
+```
+
+### Membuat Fixture HEIC Nyata untuk Testing
+
+Karena kita tidak bisa mengunggah file biner langsung di sini, berikut cara membuat fixture:
+
+```typescript
+// artifacts/api-server/tests/fixtures/generate-heic-fixtures.mjs
+// Jalankan sekali untuk membuat fixture dari foto iPhone asli
+import { writeFile } from 'fs/promises';
+import sharp from 'sharp';
+
+// Buat gambar uji dengan orientasi EXIF berbeda
+async function generateFixtures() {
+  const baseImage = sharp({
+    create: { width: 400, height: 300, channels: 3, background: { r: 255, g: 0, b: 0 } }
+  });
+
+  // Tambahkan teks "TOP" di atas agar orientasi terlihat jelas
+  const withText = baseImage.composite([{
+    input: Buffer.from(`<svg width="400" height="300">
+      <text x="200" y="30" font-size="24" fill="white" text-anchor="middle">TOP</text>
+    </svg>`),
+  }]);
+
+  // Orientasi 1: Normal
+  await withText.heif({ quality: 50 }).toFile('tests/fixtures/iphone-orient-1.heic');
+
+  // Orientasi 6: Rotated 90° CW (paling umum di iPhone portrait)
+  await withText.rotate(90).withMetadata({ orientation: 6 })
+    .heif({ quality: 50 }).toFile('tests/fixtures/iphone-orient-6.heic');
+
+  // Orientasi 3: Rotated 180°
+  await withText.rotate(180).withMetadata({ orientation: 3 })
+    .heif({ quality: 50 }).toFile('tests/fixtures/iphone-orient-3.heic');
+
+  // Orientasi 8: Rotated 90° CCW
+  await withText.rotate(-90).withMetadata({ orientation: 8 })
+    .heif({ quality: 50 }).toFile('tests/fixtures/iphone-orient-8.heic');
+}
+
+generateFixtures();
+```
+
+### Contract Test untuk Orientasi
+
+```typescript
+// artifacts/api-server/tests/attachment-preview-contract.mjs
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import sharp from 'sharp';
+import { convertHeicToJpeg } from '../src/lib/attachment-preview.ts';
+
+const FIXTURES = [
+  { file: 'iphone-orient-1.heic', expectedWidth: 400, expectedHeight: 300, label: 'normal' },
+  { file: 'iphone-orient-6.heic', expectedWidth: 300, expectedHeight: 400, label: 'portrait 90° CW' },
+  { file: 'iphone-orient-3.heic', expectedWidth: 400, expectedHeight: 300, label: 'upside down' },
+  { file: 'iphone-orient-8.heic', expectedWidth: 300, expectedHeight: 400, label: 'portrait 90° CCW' },
+];
+
+describe('HEIC orientation handling', () => {
+  for (const fixture of FIXTURES) {
+    it(`menghasilkan JPEG dengan orientasi benar untuk ${fixture.label}`, async () => {
+      const input = readFileSync(`tests/fixtures/${fixture.file}`);
+      const output = await convertHeicToJpeg(input);
+
+      // Verifikasi output adalah JPEG valid
+      const metadata = await sharp(output).metadata();
+      expect(metadata.format).toBe('jpeg');
+
+      // Verifikasi dimensi sesuai (sudah di-rotate)
+      expect(metadata.width).toBe(fixture.expectedWidth);
+      expect(metadata.height).toBe(fixture.expectedHeight);
+
+      // Verifikasi EXIF orientation sudah di-bake (tidak ada flag rotasi)
+      expect(metadata.orientation).toBeUndefined();
+    });
+  }
+
+  it('menangani HEIF multi-frame (Live Photo) tanpa crash', async () => {
+    const input = readFileSync('tests/fixtures/iphone-live-photo.heic');
+    const output = await convertHeicToJpeg(input);
+    
+    const metadata = await sharp(output).metadata();
+    expect(metadata.format).toBe('jpeg');
+    expect(metadata.width).toBeGreaterThan(0);
+  });
+});
+```
+
+---
+
+### Ringkasan Status
+
+| Task | Status | Yang Bisa Saya Bantu Selanjutnya |
+|---|---|---|
+| Material Traceability (keseluruhan) | ✅ Selesai | — |
+| Task #24: MIR → Batch Sync | 📋 Menunggu giliran | Kode di atas siap di-*merge* saat giliran tiba |
+| HEIC Orientation (Ester) | 🔄 Sedang berjalan | Fixture generator + contract test di atas |
+
+Apakah Anda ingin saya menyiapkan **pull request draft** untuk Task #24 agar siap di-*review* saat giliran pengerjaan tiba, atau ada hal lain yang perlu didahulukan?
