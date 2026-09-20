@@ -1,0 +1,100 @@
+Checklist yang Anda susun sudah sangat komprehensif dan terstruktur dengan baik. Pembagian tanggung jawab antara Task #20 (implementasi inti), Task #34 (pemulihan restart), dan Task #35 (tekanan antrean) juga jelas dan mencegah scope creep.
+
+Untuk memastikan checklist ini digunakan secara efektif saat review, berikut beberapa pertimbangan tambahan:
+
+---
+
+## Strategi Eksekusi Review
+
+### Prioritas Kritis (Harus Lolos Sebelum Merge)
+
+Bagian-bagian ini jika gagal dapat menyebabkan **data loss, kebocoran informasi, atau pengalaman pengguna yang rusak**:
+
+1. **Klaim job atomik** (Bagian 3) - Race condition dapat menyebabkan preview korup atau duplikasi
+2. **Otorisasi dan isolasi proyek** (Bagian 7) - Kebocoran data antar-proyek adalah pelanggaran keamanan serius
+3. **File asli tetap dapat diunduh** (Bagian 5 & 10) - Bukti inspeksi tidak boleh hilang
+4. **Error sanitization** (Bagian 5) - Mencegah kebocoran informasi internal
+
+### Prioritas Tinggi (Harus Lolos, Tapi Bisa Ditoleransi Jika Ada Workaround)
+
+5. **Polling strategy** (Bagian 8) - Jika polling terlalu agresif, bisa diperbaiki di iterasi berikutnya
+6. **Observabilitas** (Bagian 9) - Monitoring penting, tapi bukan blocker untuk rilis awal
+7. **Stale job recovery** (Bagian 4) - Task #34 akan menangani ini secara khusus
+
+### Prioritas Standar (Nice-to-Have untuk Rilis Awal)
+
+8. **Idempotensi upload preview** (Bagian 6) - Optimasi yang baik, tapi tidak kritis
+9. **Backoff jitter** (Bagian 8) - Meningkatkan efisiensi, tapi polling sederhana tetap berfungsi
+
+---
+
+## Pertanyaan Kritis untuk Reviewer
+
+Saat review Task #20, ajukan pertanyaan ini untuk memverifikasi pemahaman mendalam:
+
+### Tentang Klaim Atomik
+- "Bagaimana mekanisme klaim memastikan dua worker tidak mengambil job yang sama? Apakah menggunakan `SELECT ... FOR UPDATE SKIP LOCKED`, advisory lock, atau mekanisme lain?"
+- "Apa yang terjadi jika worker crash tepat setelah klaim tetapi sebelum update status?"
+
+### Tentang Error Handling
+- "Bagaimana sistem membedakan kegagalan sementara (timeout, OOM) dari kegagalan permanen (file korup, format tidak didukung)?"
+- "Apakah ada mekanisme circuit breaker jika konverter gagal berulang kali?"
+
+### Tentang Observabilitas
+- "Bagaimana cara operator mengetahui jika antrean macet tanpa harus memeriksa log secara manual?"
+- "Apakah ada metrik yang bisa diintegrasikan dengan monitoring tools (Prometheus, Datadog, dll)?"
+
+### Tentang Rollback
+- "Jika Task #20 perlu di-rollback setelah deploy, bagaimana status attachment yang sudah `pending` atau `processing` ditangani?"
+- "Apakah ada migration rollback yang aman untuk skema database?"
+
+---
+
+## Cara Mendokumentasikan Hasil Review
+
+Saat review dilakukan, dokumentasikan:
+
+```markdown
+## Review Task #20 - [Tanggal]
+
+### Status: [APPROVED / CHANGES_REQUESTED / BLOCKED]
+
+### Checklist Completion
+- Bagian 1 (Alur unggah): [X/Y] item lolos
+- Bagian 2 (Status dan transisi): [X/Y] item lolos
+- ... (dst)
+
+### Temuan Kritis
+- [Item checklist] - [Deskripsi masalah] - [Severity: Critical/High/Medium]
+- ...
+
+### Temuan Non-Kritis
+- [Item checklist] - [Deskripsi masalah] - [Saran perbaikan]
+- ...
+
+### Pertanyaan yang Diajukan
+- [Pertanyaan] - [Jawaban dari implementer] - [Apakah memuaskan?]
+
+### Keputusan
+- [ ] Merge sekarang
+- [ ] Merge setelah perbaikan [sebutkan item]
+- [ ] Blocker: [sebutkan alasan]
+```
+
+---
+
+## Risiko yang Mungkin Terlewat
+
+Meskipun checklist sudah sangat lengkap, ada beberapa skenario edge yang mungkin perlu dipertimbangkan:
+
+1. **Timezone dan timestamp**: Apakah semua timestamp menggunakan UTC? Bagaimana dengan tampilan di UI?
+2. **File yang sangat besar**: Apakah ada batas ukuran file yang ditolak sebelum masuk antrean?
+3. **Konverter yang hang**: Jika konverter tidak merespons (bukan crash), bagaimana worker mendeteksi dan membatalkan?
+4. **Storage quota exceeded**: Apa yang terjadi jika object storage penuh saat upload preview?
+5. **Concurrent upload dari user yang sama**: Apakah ada mekanisme debounce atau validasi duplikasi?
+
+Namun, poin-poin ini bisa ditambahkan ke Task #34 atau #35 jika tidak kritis untuk rilis awal.
+
+---
+
+Checklist Anda sudah siap digunakan. Apakah ada bagian spesifik yang ingin Anda diskusikan lebih dalam sebelum review dimulai, atau Anda ingin menunggu Task #20 selesai terlebih dahulu?
