@@ -147,6 +147,142 @@ export interface Attachment {
   previewError?: string | null;
 }
 
+export interface MaterialType {
+  id: string;
+  projectId: string;
+  name: string;
+  category: string;
+  /** @nullable */
+  specification?: string | null;
+  unit: string;
+  createdAt: string;
+}
+
+export interface MaterialTypeInput {
+  /** @minLength 1 */
+  name: string;
+  /** @minLength 1 */
+  category: string;
+  specification?: string;
+  /** @minLength 1 */
+  unit: string;
+}
+
+export interface MaterialLocation {
+  id: string;
+  projectId: string;
+  name: string;
+  /** @nullable */
+  description?: string | null;
+  createdAt: string;
+}
+
+export interface MaterialLocationInput {
+  /** @minLength 1 */
+  name: string;
+  description?: string;
+}
+
+export interface MaterialBatch {
+  id: string;
+  projectId: string;
+  materialTypeId: string;
+  batchNumber: string;
+  supplier: string;
+  deliveryDate: string;
+  /** @minimum 1 */
+  quantity: number;
+  unit: string;
+  /** @nullable */
+  certificateReference?: string | null;
+  /** @nullable */
+  inspectionId?: string | null;
+  inspectionStatus: string;
+  receivedBy: string;
+  createdAt: string;
+}
+
+export type MaterialBatchInputInspectionStatus = typeof MaterialBatchInputInspectionStatus[keyof typeof MaterialBatchInputInspectionStatus];
+
+
+export const MaterialBatchInputInspectionStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+} as const;
+
+export interface MaterialBatchInput {
+  materialTypeId: string;
+  /** @minLength 1 */
+  batchNumber: string;
+  /** @minLength 1 */
+  supplier: string;
+  deliveryDate: string;
+  /** @minimum 1 */
+  quantity: number;
+  /** @minLength 1 */
+  unit: string;
+  certificateReference?: string;
+  inspectionId?: string;
+  inspectionStatus?: MaterialBatchInputInspectionStatus;
+}
+
+export interface MaterialInventory {
+  id: string;
+  projectId: string;
+  batchId: string;
+  storageLocationId: string;
+  /** @minimum 0 */
+  quantity: number;
+  updatedAt: string;
+}
+
+export interface MaterialInventoryInput {
+  batchId: string;
+  storageLocationId: string;
+  /** @minimum 1 */
+  quantity: number;
+}
+
+export interface MaterialUsage {
+  id: string;
+  projectId: string;
+  batchId: string;
+  location: string;
+  /** @minimum 1 */
+  quantity: number;
+  installedDate: string;
+  installedBy: string;
+  /** @nullable */
+  inspectionId?: string | null;
+  /** @nullable */
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface MaterialUsageInput {
+  batchId: string;
+  /** @minLength 1 */
+  location: string;
+  /** @minimum 1 */
+  quantity: number;
+  installedDate: string;
+  inspectionId?: string;
+  notes?: string;
+}
+
+export interface MaterialTrace {
+  batch: MaterialBatch;
+  inventory: MaterialInventory[];
+  usage: MaterialUsage[];
+}
+
+export interface MaterialRecall {
+  batchId: string;
+  totalAffectedLocations: number;
+  locations: MaterialUsage[];
+}
+
 export interface Workspace {
   projects: Project[];
   qualityPlans: GenericRecord[];

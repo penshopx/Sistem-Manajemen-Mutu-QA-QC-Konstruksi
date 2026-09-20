@@ -24,7 +24,7 @@ Aplikasi web dan video pengenalan untuk pengendalian mutu konstruksi berbasis al
 
 - `artifacts/qa-qc-konstruksi/` — website aplikasi QA/QC utama pada route root.
 - `artifacts/qa-qc-konstruksi/src/lib/store.tsx` — data contoh dan persistence localStorage.
-- `artifacts/qa-qc-konstruksi/src/pages/` — dashboard, rencana mutu, inspeksi, NCR/CAPA, dokumen, dan laporan.
+- `artifacts/qa-qc-konstruksi/src/pages/` — dashboard, rencana mutu, inspeksi, material traceability, NCR/CAPA, dokumen, dan laporan.
 - `artifacts/qa-qc-konstruksi-video/` — video animasi 90 detik.
 - `artifacts/qa-qc-konstruksi-video/src/components/video/VideoTemplate.tsx` — urutan, durasi, audio, dan komposisi utama.
 - `artifacts/qa-qc-konstruksi-video/src/components/video/video_scenes/Scenes.tsx` — sepuluh scene video.
@@ -39,7 +39,7 @@ Aplikasi web dan video pengenalan untuk pengendalian mutu konstruksi berbasis al
 
 ## Product
 
-Website mendukung dashboard mutu, RMK/ITP, MIR/WIR, checklist inspeksi, bukti lapangan, NCR/CAPA, dokumen terkendali, audit, dan laporan. Video menjelaskan nilai serta alur produk tersebut.
+Website mendukung dashboard mutu, RMK/ITP, MIR/WIR, material traceability dari pemasok hingga lokasi pemasangan, checklist inspeksi, bukti lapangan, NCR/CAPA, dokumen terkendali, audit, dan laporan. Video menjelaskan nilai serta alur produk tersebut.
 
 ## User preferences
 

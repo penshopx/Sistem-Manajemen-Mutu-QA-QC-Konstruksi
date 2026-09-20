@@ -17,6 +17,7 @@ import { NCRPage } from "@/pages/NCR";
 import { DocumentsPage } from "@/pages/Documents";
 import { ReportsPage } from "@/pages/Reports";
 import { TeamPage } from "@/pages/Team";
+import { MaterialsPage } from "@/pages/Materials";
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -121,6 +122,7 @@ function AuthenticatedApp() {
           <Route path="/quality-plan" component={QualityPlan} />
           <Route path="/inspections" component={Inspections} />
           <Route path="/ncr" component={NCRPage} />
+          <Route path="/materials" component={MaterialsPage} />
           <Route path="/documents" component={DocumentsPage} />
           <Route path="/reports" component={ReportsPage} />
           <Route path="/team" component={TeamPage} />

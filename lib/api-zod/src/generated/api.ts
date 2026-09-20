@@ -209,3 +209,251 @@ export const PreviewRecordAttachmentParams = zod.object({
 export const PreviewRecordAttachmentResponse = zod.unknown()
 
 
+export const ListMaterialTypesResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "name": zod.string(),
+  "category": zod.string(),
+  "specification": zod.string().nullish(),
+  "unit": zod.string(),
+  "createdAt": zod.coerce.date()
+})
+export const ListMaterialTypesResponse = zod.array(ListMaterialTypesResponseItem)
+
+
+
+
+
+
+
+export const CreateMaterialTypeBody = zod.object({
+  "name": zod.string().min(1),
+  "category": zod.string().min(1),
+  "specification": zod.string().optional(),
+  "unit": zod.string().min(1)
+})
+
+export const CreateMaterialTypeResponse = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "name": zod.string(),
+  "category": zod.string(),
+  "specification": zod.string().nullish(),
+  "unit": zod.string(),
+  "createdAt": zod.coerce.date()
+})
+
+
+export const ListMaterialLocationsResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "name": zod.string(),
+  "description": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+export const ListMaterialLocationsResponse = zod.array(ListMaterialLocationsResponseItem)
+
+
+
+
+
+export const CreateMaterialLocationBody = zod.object({
+  "name": zod.string().min(1),
+  "description": zod.string().optional()
+})
+
+export const CreateMaterialLocationResponse = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "name": zod.string(),
+  "description": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+
+
+
+
+export const ListMaterialBatchesResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "materialTypeId": zod.string().uuid(),
+  "batchNumber": zod.string(),
+  "supplier": zod.string(),
+  "deliveryDate": zod.coerce.date(),
+  "quantity": zod.number().int().min(1),
+  "unit": zod.string(),
+  "certificateReference": zod.string().nullish(),
+  "inspectionId": zod.string().nullish(),
+  "inspectionStatus": zod.string(),
+  "receivedBy": zod.string().uuid(),
+  "createdAt": zod.coerce.date()
+})
+export const ListMaterialBatchesResponse = zod.array(ListMaterialBatchesResponseItem)
+
+
+
+
+
+
+
+
+export const CreateMaterialBatchBody = zod.object({
+  "materialTypeId": zod.string().uuid(),
+  "batchNumber": zod.string().min(1),
+  "supplier": zod.string().min(1),
+  "deliveryDate": zod.coerce.date(),
+  "quantity": zod.number().int().min(1),
+  "unit": zod.string().min(1),
+  "certificateReference": zod.string().optional(),
+  "inspectionId": zod.string().optional(),
+  "inspectionStatus": zod.enum(['pending', 'approved', 'rejected']).optional()
+})
+
+
+
+
+export const CreateMaterialBatchResponse = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "materialTypeId": zod.string().uuid(),
+  "batchNumber": zod.string(),
+  "supplier": zod.string(),
+  "deliveryDate": zod.coerce.date(),
+  "quantity": zod.number().int().min(1),
+  "unit": zod.string(),
+  "certificateReference": zod.string().nullish(),
+  "inspectionId": zod.string().nullish(),
+  "inspectionStatus": zod.string(),
+  "receivedBy": zod.string().uuid(),
+  "createdAt": zod.coerce.date()
+})
+
+
+
+
+
+export const PlaceMaterialInventoryBody = zod.object({
+  "batchId": zod.string().uuid(),
+  "storageLocationId": zod.string().uuid(),
+  "quantity": zod.number().int().min(1)
+})
+
+export const placeMaterialInventoryResponseQuantityMin = 0;
+
+
+
+export const PlaceMaterialInventoryResponse = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "batchId": zod.string().uuid(),
+  "storageLocationId": zod.string().uuid(),
+  "quantity": zod.number().int().min(placeMaterialInventoryResponseQuantityMin),
+  "updatedAt": zod.coerce.date()
+})
+
+
+
+
+
+
+export const RecordMaterialUsageBody = zod.object({
+  "batchId": zod.string().uuid(),
+  "location": zod.string().min(1),
+  "quantity": zod.number().int().min(1),
+  "installedDate": zod.coerce.date(),
+  "inspectionId": zod.string().optional(),
+  "notes": zod.string().optional()
+})
+
+
+
+
+export const RecordMaterialUsageResponse = zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "batchId": zod.string().uuid(),
+  "location": zod.string(),
+  "quantity": zod.number().int().min(1),
+  "installedDate": zod.coerce.date(),
+  "installedBy": zod.string().uuid(),
+  "inspectionId": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+
+export const GetMaterialBatchTraceParams = zod.object({
+  "batchId": zod.coerce.string().uuid()
+})
+
+
+export const getMaterialBatchTraceResponseInventoryItemQuantityMin = 0;
+
+
+
+
+export const GetMaterialBatchTraceResponse = zod.object({
+  "batch": zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "materialTypeId": zod.string().uuid(),
+  "batchNumber": zod.string(),
+  "supplier": zod.string(),
+  "deliveryDate": zod.coerce.date(),
+  "quantity": zod.number().int().min(1),
+  "unit": zod.string(),
+  "certificateReference": zod.string().nullish(),
+  "inspectionId": zod.string().nullish(),
+  "inspectionStatus": zod.string(),
+  "receivedBy": zod.string().uuid(),
+  "createdAt": zod.coerce.date()
+}),
+  "inventory": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "batchId": zod.string().uuid(),
+  "storageLocationId": zod.string().uuid(),
+  "quantity": zod.number().int().min(getMaterialBatchTraceResponseInventoryItemQuantityMin),
+  "updatedAt": zod.coerce.date()
+})),
+  "usage": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "batchId": zod.string().uuid(),
+  "location": zod.string(),
+  "quantity": zod.number().int().min(1),
+  "installedDate": zod.coerce.date(),
+  "installedBy": zod.string().uuid(),
+  "inspectionId": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+}))
+})
+
+
+export const GetMaterialBatchRecallParams = zod.object({
+  "batchId": zod.coerce.string().uuid()
+})
+
+
+
+
+export const GetMaterialBatchRecallResponse = zod.object({
+  "batchId": zod.string().uuid(),
+  "totalAffectedLocations": zod.number().int(),
+  "locations": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "projectId": zod.string().uuid(),
+  "batchId": zod.string().uuid(),
+  "location": zod.string(),
+  "quantity": zod.number().int().min(1),
+  "installedDate": zod.coerce.date(),
+  "installedBy": zod.string().uuid(),
+  "inspectionId": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+}))
+})
+
+

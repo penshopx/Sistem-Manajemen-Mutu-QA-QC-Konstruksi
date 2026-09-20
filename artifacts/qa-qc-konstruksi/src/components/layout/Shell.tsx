@@ -8,7 +8,8 @@ import {
   BarChart4,
   ActivitySquare,
   LogOut,
-  Users
+  Users,
+  Box
 } from "lucide-react";
 import { useClerk, useUser } from "@clerk/react";
 import { useStore } from "@/lib/store";
@@ -29,6 +30,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     { href: "/quality-plan", label: "Quality Plan", icon: ClipboardCheck },
     { href: "/inspections", label: "Inspections", icon: SearchCheck },
     { href: "/ncr", label: "NCR & CAPA", icon: AlertOctagon },
+    { href: "/materials", label: "Material Trace", icon: Box },
     { href: "/documents", label: "Documents", icon: FileStack },
     { href: "/reports", label: "Reports", icon: BarChart4 },
     { href: "/team", label: "Team", icon: Users },

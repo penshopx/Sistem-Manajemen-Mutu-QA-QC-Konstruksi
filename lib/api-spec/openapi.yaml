@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: workspace
     description: Shared QA/QC project workspace
+  - name: materials
+    description: Project material traceability
 paths:
   /healthz:
     get:
@@ -204,6 +206,93 @@ paths:
               schema: { type: string, format: binary }
         "404": { description: Attachment not found }
         "422": { description: Preview conversion failed }
+  /materials/types:
+    get:
+      operationId: listMaterialTypes
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200": { description: Material types, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MaterialType" } } } } }
+    post:
+      operationId: createMaterialType
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaterialTypeInput" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialType" } } } }
+  /materials/locations:
+    get:
+      operationId: listMaterialLocations
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200": { description: Storage locations, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MaterialLocation" } } } } }
+    post:
+      operationId: createMaterialLocation
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaterialLocationInput" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialLocation" } } } }
+  /materials/batches:
+    get:
+      operationId: listMaterialBatches
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200": { description: Material batches, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MaterialBatch" } } } } }
+    post:
+      operationId: createMaterialBatch
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaterialBatchInput" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialBatch" } } } }
+  /materials/inventory:
+    post:
+      operationId: placeMaterialInventory
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaterialInventoryInput" } } }
+      responses:
+        "201": { description: Placed, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialInventory" } } } }
+  /materials/usage:
+    post:
+      operationId: recordMaterialUsage
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MaterialUsageInput" } } }
+      responses:
+        "201": { description: Recorded, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialUsage" } } } }
+        "409": { description: Insufficient stock }
+  /materials/batches/{batchId}/trace:
+    get:
+      operationId: getMaterialBatchTrace
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Trace, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialTrace" } } } }
+  /materials/batches/{batchId}/recall:
+    get:
+      operationId: getMaterialBatchRecall
+      tags: [materials]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Recall impact, content: { application/json: { schema: { $ref: "#/components/schemas/MaterialRecall" } } } }
 components:
   securitySchemes:
     clerkSession:
@@ -349,6 +438,125 @@ components:
           type: string
           enum: [original, ready, failed]
         previewError: { type: ["string", "null"] }
+    MaterialType:
+      type: object
+      required: [id, projectId, name, category, unit, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        name: { type: string }
+        category: { type: string }
+        specification: { type: ["string", "null"] }
+        unit: { type: string }
+        createdAt: { type: string, format: date-time }
+    MaterialTypeInput:
+      type: object
+      required: [name, category, unit]
+      properties:
+        name: { type: string, minLength: 1 }
+        category: { type: string, minLength: 1 }
+        specification: { type: string }
+        unit: { type: string, minLength: 1 }
+    MaterialLocation:
+      type: object
+      required: [id, projectId, name, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+    MaterialLocationInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+    MaterialBatch:
+      type: object
+      required: [id, projectId, materialTypeId, batchNumber, supplier, deliveryDate, quantity, unit, inspectionStatus, receivedBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        materialTypeId: { type: string, format: uuid }
+        batchNumber: { type: string }
+        supplier: { type: string }
+        deliveryDate: { type: string, format: date-time }
+        quantity: { type: integer, minimum: 1 }
+        unit: { type: string }
+        certificateReference: { type: ["string", "null"] }
+        inspectionId: { type: ["string", "null"] }
+        inspectionStatus: { type: string }
+        receivedBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    MaterialBatchInput:
+      type: object
+      required: [materialTypeId, batchNumber, supplier, deliveryDate, quantity, unit]
+      properties:
+        materialTypeId: { type: string, format: uuid }
+        batchNumber: { type: string, minLength: 1 }
+        supplier: { type: string, minLength: 1 }
+        deliveryDate: { type: string, format: date-time }
+        quantity: { type: integer, minimum: 1 }
+        unit: { type: string, minLength: 1 }
+        certificateReference: { type: string }
+        inspectionId: { type: string }
+        inspectionStatus: { type: string, enum: [pending, approved, rejected] }
+    MaterialInventory:
+      type: object
+      required: [id, projectId, batchId, storageLocationId, quantity, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        batchId: { type: string, format: uuid }
+        storageLocationId: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 0 }
+        updatedAt: { type: string, format: date-time }
+    MaterialInventoryInput:
+      type: object
+      required: [batchId, storageLocationId, quantity]
+      properties:
+        batchId: { type: string, format: uuid }
+        storageLocationId: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1 }
+    MaterialUsage:
+      type: object
+      required: [id, projectId, batchId, location, quantity, installedDate, installedBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        batchId: { type: string, format: uuid }
+        location: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        installedDate: { type: string, format: date-time }
+        installedBy: { type: string, format: uuid }
+        inspectionId: { type: ["string", "null"] }
+        notes: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+    MaterialUsageInput:
+      type: object
+      required: [batchId, location, quantity, installedDate]
+      properties:
+        batchId: { type: string, format: uuid }
+        location: { type: string, minLength: 1 }
+        quantity: { type: integer, minimum: 1 }
+        installedDate: { type: string, format: date-time }
+        inspectionId: { type: string }
+        notes: { type: string }
+    MaterialTrace:
+      type: object
+      required: [batch, inventory, usage]
+      properties:
+        batch: { $ref: "#/components/schemas/MaterialBatch" }
+        inventory: { type: array, items: { $ref: "#/components/schemas/MaterialInventory" } }
+        usage: { type: array, items: { $ref: "#/components/schemas/MaterialUsage" } }
+    MaterialRecall:
+      type: object
+      required: [batchId, totalAffectedLocations, locations]
+      properties:
+        batchId: { type: string, format: uuid }
+        totalAffectedLocations: { type: integer }
+        locations: { type: array, items: { $ref: "#/components/schemas/MaterialUsage" } }
     Workspace:
       type: object
       required: [projects, qualityPlans, itps, inspections, ncrs, documents, audits, activities, members, currentUser]

@@ -10,6 +10,9 @@ export type ProjectRole = keyof typeof permissionsByRole;
 export function canMutate(role: ProjectRole, collection: string, action: "create" | "update" | "delete"): boolean {
   if (role === "QA_ENGINEER") return true;
   if (role === "PROJECT_MANAGER") return false;
+  if (collection === "materials") {
+    return role === "SITE_MANAGER" ? action !== "delete" : role === "QC_INSPECTOR" && action === "create";
+  }
   if (role === "SITE_MANAGER") return action === "update";
   return action !== "delete" && (collection === "inspections" || collection === "ncrs");
 }
