@@ -122,6 +122,44 @@ export const InviteProjectMemberResponse = zod.object({
 })
 
 
+/**
+ * @summary Get the storage cleanup status for the last 24 hours
+ */
+
+export const getStorageCleanupOperationsResponsePendingMin = 0;
+
+export const getStorageCleanupOperationsResponseDeletedMin = 0;
+
+export const getStorageCleanupOperationsResponsePreservedMin = 0;
+
+export const getStorageCleanupOperationsResponseFailedMin = 0;
+
+export const getStorageCleanupOperationsResponseRepeatedFailuresItemFailureCountMin = 3;
+
+
+
+export const GetStorageCleanupOperationsResponse = zod.object({
+  "windowHours": zod.number().int().min(1),
+  "pending": zod.number().int().min(getStorageCleanupOperationsResponsePendingMin),
+  "deleted": zod.number().int().min(getStorageCleanupOperationsResponseDeletedMin),
+  "preserved": zod.number().int().min(getStorageCleanupOperationsResponsePreservedMin),
+  "failed": zod.number().int().min(getStorageCleanupOperationsResponseFailedMin),
+  "warning": zod.union([zod.object({
+  "level": zod.enum(['notice', 'warning']),
+  "message": zod.string()
+}),zod.null()]),
+  "repeatedFailures": zod.array(zod.object({
+  "uploadId": zod.string().uuid(),
+  "failureCount": zod.number().int().min(getStorageCleanupOperationsResponseRepeatedFailuresItemFailureCountMin)
+})),
+  "recentFailures": zod.array(zod.object({
+  "uploadId": zod.string().uuid(),
+  "error": zod.string().nullable(),
+  "occurredAt": zod.coerce.date()
+}))
+})
+
+
 export const RequestRecordAttachmentUploadParams = zod.object({
   "collection": zod.enum(['inspections', 'ncrs']),
   "id": zod.coerce.string()

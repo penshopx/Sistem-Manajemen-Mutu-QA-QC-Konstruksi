@@ -42,6 +42,7 @@ import type {
   ProjectMember,
   RecordInput,
   RecordUpdate,
+  StorageCleanupOperations,
   Workspace
 } from './api.schemas';
 
@@ -552,6 +553,83 @@ export const useInviteProjectMember = <TError = ErrorType<void>,
       > => {
       return useMutation(getInviteProjectMemberMutationOptions(options));
     }
+
+export const getGetStorageCleanupOperationsUrl = () => {
+
+
+
+
+  return `/api/workspace/operations/storage-cleanup`
+}
+
+/**
+ * @summary Get the storage cleanup status for the last 24 hours
+ */
+export const getStorageCleanupOperations = async ( options?: Parameters<typeof customFetch>[1]): Promise<StorageCleanupOperations> => {
+
+  return customFetch<StorageCleanupOperations>(getGetStorageCleanupOperationsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetStorageCleanupOperationsQueryKey = () => {
+    return [
+    `/api/workspace/operations/storage-cleanup`
+    ] as const;
+    }
+
+
+export const getGetStorageCleanupOperationsQueryOptions = <TData = Awaited<ReturnType<typeof getStorageCleanupOperations>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStorageCleanupOperations>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetStorageCleanupOperationsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getStorageCleanupOperations>>> = ({ signal }) => getStorageCleanupOperations({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getStorageCleanupOperations>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetStorageCleanupOperationsQueryResult = NonNullable<Awaited<ReturnType<typeof getStorageCleanupOperations>>>
+export type GetStorageCleanupOperationsQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get the storage cleanup status for the last 24 hours
+ */
+
+export function useGetStorageCleanupOperations<TData = Awaited<ReturnType<typeof getStorageCleanupOperations>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStorageCleanupOperations>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetStorageCleanupOperationsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getRequestRecordAttachmentUploadUrl = (collection: 'inspections' | 'ncrs',
     id: string,) => {

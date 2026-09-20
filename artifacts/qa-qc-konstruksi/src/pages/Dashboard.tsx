@@ -2,6 +2,7 @@ import { useStore } from "@/lib/store";
 import { Card, CardContent, CardHeader, CardTitle, Badge } from "@/components/ui/core";
 import { Link } from "wouter";
 import { ActivitySquare, AlertTriangle, CheckCircle2, ClipboardList } from "lucide-react";
+import { StorageCleanupOperations } from "@/components/StorageCleanupOperations";
 
 export function Dashboard() {
   const { state } = useStore();
@@ -65,6 +66,8 @@ export function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {state.currentUser?.role === "QA_ENGINEER" && <StorageCleanupOperations />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>

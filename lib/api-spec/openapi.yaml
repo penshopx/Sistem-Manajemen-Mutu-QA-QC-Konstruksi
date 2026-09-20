@@ -113,6 +113,20 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProjectMember" }
         "403": { description: Only QA Engineers can invite members }
+  /workspace/operations/storage-cleanup:
+    get:
+      operationId: getStorageCleanupOperations
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      summary: Get the storage cleanup status for the last 24 hours
+      responses:
+        "200":
+          description: Storage cleanup status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageCleanupOperations" }
+        "401": { description: Unauthenticated }
+        "403": { description: Only QA Engineers can view storage cleanup operations }
   /workspace/{collection}/{id}/attachments/upload-url:
     post:
       operationId: requestRecordAttachmentUpload
@@ -438,6 +452,46 @@ components:
           type: string
           enum: [original, ready, failed]
         previewError: { type: ["string", "null"] }
+    StorageCleanupWarning:
+      type: object
+      required: [level, message]
+      properties:
+        level:
+          type: string
+          enum: [notice, warning]
+        message: { type: string }
+    StorageCleanupRepeatedFailure:
+      type: object
+      required: [uploadId, failureCount]
+      properties:
+        uploadId: { type: string, format: uuid }
+        failureCount: { type: integer, minimum: 3 }
+    StorageCleanupRecentFailure:
+      type: object
+      required: [uploadId, error, occurredAt]
+      properties:
+        uploadId: { type: string, format: uuid }
+        error: { type: ["string", "null"] }
+        occurredAt: { type: string, format: date-time }
+    StorageCleanupOperations:
+      type: object
+      required: [windowHours, pending, deleted, preserved, failed, warning, repeatedFailures, recentFailures]
+      properties:
+        windowHours: { type: integer, minimum: 1 }
+        pending: { type: integer, minimum: 0 }
+        deleted: { type: integer, minimum: 0 }
+        preserved: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        warning:
+          oneOf:
+            - $ref: "#/components/schemas/StorageCleanupWarning"
+            - type: "null"
+        repeatedFailures:
+          type: array
+          items: { $ref: "#/components/schemas/StorageCleanupRepeatedFailure" }
+        recentFailures:
+          type: array
+          items: { $ref: "#/components/schemas/StorageCleanupRecentFailure" }
     MaterialType:
       type: object
       required: [id, projectId, name, category, unit, createdAt]

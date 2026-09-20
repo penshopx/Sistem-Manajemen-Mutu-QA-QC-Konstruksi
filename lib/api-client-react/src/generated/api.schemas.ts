@@ -147,6 +147,48 @@ export interface Attachment {
   previewError?: string | null;
 }
 
+export type StorageCleanupWarningLevel = typeof StorageCleanupWarningLevel[keyof typeof StorageCleanupWarningLevel];
+
+
+export const StorageCleanupWarningLevel = {
+  notice: 'notice',
+  warning: 'warning',
+} as const;
+
+export interface StorageCleanupWarning {
+  level: StorageCleanupWarningLevel;
+  message: string;
+}
+
+export interface StorageCleanupRepeatedFailure {
+  uploadId: string;
+  /** @minimum 3 */
+  failureCount: number;
+}
+
+export interface StorageCleanupRecentFailure {
+  uploadId: string;
+  /** @nullable */
+  error: string | null;
+  occurredAt: string;
+}
+
+export interface StorageCleanupOperations {
+  /** @minimum 1 */
+  windowHours: number;
+  /** @minimum 0 */
+  pending: number;
+  /** @minimum 0 */
+  deleted: number;
+  /** @minimum 0 */
+  preserved: number;
+  /** @minimum 0 */
+  failed: number;
+  warning: StorageCleanupWarning | null;
+  repeatedFailures: StorageCleanupRepeatedFailure[];
+  recentFailures: StorageCleanupRecentFailure[];
+}
+
 export interface MaterialType {
   id: string;
   projectId: string;
