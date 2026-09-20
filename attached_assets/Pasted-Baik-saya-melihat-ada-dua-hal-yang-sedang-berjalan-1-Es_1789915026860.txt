@@ -1,0 +1,294 @@
+Baik, saya melihat ada dua hal yang sedang berjalan:
+
+1. **Ester Kristian** sedang menyelesaikan task teknis penting (konversi HEIC dan pengujian galeri foto) - ini akan memastikan bukti foto dari iPhone bisa ditampilkan dengan benar dan galeri tidak rusak saat UI berubah.
+
+2. **Prioritas bisnis Anda**: Material Traceability System.
+
+Mengingat agen mengalami error saat mengerjakan Material Traceability, saya akan membantu Anda membangun fondasi untuk modul ini. Berdasarkan **SKKNI 333-2013 Unit M.711000.004.01** (Mengendalikan Mutu Bahan/Material), berikut adalah rancangan lengkapnya:
+
+---
+
+## Rancangan Material Traceability System
+
+### 1. Skema Database
+
+```typescript
+// lib/db/src/schema/materials.ts
+import { pgTable, serial, varchar, text, timestamp, integer, uuid } from 'drizzle-orm/pg-core';
+import { projects } from './projects';
+import { users } from './users';
+
+// Tabel Master Material (jenis material yang digunakan di proyek)
+export const materialTypes = pgTable('material_types', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  name: varchar('name', { length: 255 }).notNull(), // Contoh: "Beton K-300", "Baja Tulangan D13"
+  category: varchar('category', { length: 100 }).notNull(), // "Struktur", "Arsitektur", "MEP"
+  specification: text('specification'), // Spesifikasi teknis
+  unit: varchar('unit', { length: 50 }).notNull(), // "m3", "ton", "batang"
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Tabel Batch Material (setiap pengiriman material dari supplier)
+export const materialBatches = pgTable('material_batches', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  materialTypeId: integer('material_type_id').references(() => materialTypes.id).notNull(),
+  batchNumber: varchar('batch_number', { length: 100 }).notNull(), // Nomor batch dari supplier
+  supplierName: varchar('supplier_name', { length: 255 }).notNull(),
+  deliveryDate: timestamp('delivery_date').notNull(),
+  quantity: integer('quantity').notNull(),
+  certificateUrl: text('certificate_url'), // URL sertifikat pabrik
+  inspectionStatus: varchar('inspection_status', { length: 50 }).default('pending'), // "pending", "approved", "rejected"
+  receivedBy: uuid('received_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Tabel Lokasi Penyimpanan Material
+export const materialStorageLocations = pgTable('material_storage_locations', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  name: varchar('name', { length: 255 }).notNull(), // Contoh: "Gudang A", "Area B", "Staging Zone 1"
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Tabel Inventori Material (material yang ada di lokasi penyimpanan)
+export const materialInventory = pgTable('material_inventory', {
+  id: serial('id').primaryKey(),
+  batchId: integer('batch_id').references(() => materialBatches.id).notNull(),
+  storageLocationId: integer('storage_location_id').references(() => materialStorageLocations.id).notNull(),
+  quantityRemaining: integer('quantity_remaining').notNull(),
+  lastUpdated: timestamp('last_updated').defaultNow().notNull(),
+});
+
+// Tabel Penggunaan Material (material yang dipasang di lokasi tertentu)
+export const materialUsage = pgTable('material_usage', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  batchId: integer('batch_id').references(() => materialBatches.id).notNull(),
+  inspectionId: integer('inspection_id'), // Relasi ke inspeksi jika ada
+  location: varchar('location', { length: 255 }).notNull(), // Contoh: "Lantai 3, Kolom C-5", "Balok B2-4"
+  quantityUsed: integer('quantity_used').notNull(),
+  installedDate: timestamp('installed_date').notNull(),
+  installedBy: uuid('installed_by').references(() => users.id),
+  notes: text('notes'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+```
+
+### 2. API Endpoints untuk Material Traceability
+
+```typescript
+// artifacts/api-server/src/routes/materials.ts
+import { Router } from 'express';
+import { requireAuth } from '../middlewares/auth';
+import { db } from '../lib/db';
+import { materialBatches, materialInventory, materialUsage } from '../lib/db/schema/materials';
+import { eq, and } from 'drizzle-orm';
+
+const router = Router();
+
+// POST /api/projects/:projectId/materials/batches
+// Mencatat pengiriman batch material baru
+router.post('/projects/:projectId/materials/batches', requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const { materialTypeId, batchNumber, supplierName, deliveryDate, quantity, certificateUrl } = req.body;
+  const userId = req.auth.userId;
+
+  try {
+    const [newBatch] = await db.insert(materialBatches).values({
+      projectId,
+      materialTypeId,
+      batchNumber,
+      supplierName,
+      deliveryDate,
+      quantity,
+      certificateUrl,
+      receivedBy: userId,
+    }).returning();
+
+    // Catat audit trail
+    await logAudit({
+      projectId,
+      userId,
+      action: 'CREATE_MATERIAL_BATCH',
+      recordType: 'material_batch',
+      recordId: newBatch.id,
+      after: newBatch,
+    });
+
+    res.status(201).json(newBatch);
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal mencatat batch material' });
+  }
+});
+
+// POST /api/projects/:projectId/materials/usage
+// Mencatat penggunaan material di lokasi tertentu
+router.post('/projects/:projectId/materials/usage', requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const { batchId, location, quantityUsed, installedDate, inspectionId, notes } = req.body;
+  const userId = req.auth.userId;
+
+  try {
+    // Verifikasi stok tersedia
+    const [inventory] = await db.select().from(materialInventory)
+      .where(eq(materialInventory.batchId, batchId));
+
+    if (!inventory || inventory.quantityRemaining < quantityUsed) {
+      return res.status(400).json({ error: 'Stok material tidak mencukupi' });
+    }
+
+    // Catat penggunaan
+    const [usage] = await db.insert(materialUsage).values({
+      projectId,
+      batchId,
+      location,
+      quantityUsed,
+      installedDate,
+      installedBy: userId,
+      inspectionId,
+      notes,
+    }).returning();
+
+    // Kurangi stok
+    await db.update(materialInventory)
+      .set({ 
+        quantityRemaining: inventory.quantityRemaining - quantityUsed,
+        lastUpdated: new Date()
+      })
+      .where(eq(materialInventory.batchId, batchId));
+
+    // Catat audit trail
+    await logAudit({
+      projectId,
+      userId,
+      action: 'RECORD_MATERIAL_USAGE',
+      recordType: 'material_usage',
+      recordId: usage.id,
+      after: usage,
+    });
+
+    res.status(201).json(usage);
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal mencatat penggunaan material' });
+  }
+});
+
+// GET /api/projects/:projectId/materials/batches/:batchId/trace
+// Melacak riwayat batch material (dari supplier → gudang → lokasi pemasangan)
+router.get('/projects/:projectId/materials/batches/:batchId/trace', requireAuth, async (req, res) => {
+  const { projectId, batchId } = req.params;
+
+  try {
+    const batch = await db.query.materialBatches.findFirst({
+      where: and(eq(materialBatches.id, parseInt(batchId)), eq(materialBatches.projectId, projectId)),
+      with: {
+        materialType: true,
+        inventory: {
+          with: {
+            storageLocation: true,
+          },
+        },
+        usageRecords: {
+          with: {
+            installedByUser: true,
+          },
+        },
+      },
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch material tidak ditemukan' });
+    }
+
+    res.json(batch);
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal melacak batch material' });
+  }
+});
+
+export default router;
+```
+
+### 3. Integrasi dengan Inspeksi Material (MIR)
+
+Material Traceability harus terintegrasi dengan **Material Inspection Request (MIR)**. Saat QA Engineer melakukan inspeksi material masuk, sistem harus:
+
+```typescript
+// artifacts/api-server/src/routes/inspections.ts
+// Saat inspeksi material disetujui, otomatis update status batch
+router.post('/projects/:projectId/inspections/:inspectionId/approve', requireAuth, async (req, res) => {
+  const { projectId, inspectionId } = req.params;
+  const userId = req.auth.userId;
+
+  try {
+    // Update inspeksi
+    const [updatedInspection] = await db.update(inspections)
+      .set({ status: 'approved', approvedBy: userId, approvedAt: new Date() })
+      .where(eq(inspections.id, parseInt(inspectionId)))
+      .returning();
+
+    // Jika ini inspeksi material, update status batch
+    if (updatedInspection.type === 'MATERIAL_INSPECTION' && updatedInspection.relatedBatchId) {
+      await db.update(materialBatches)
+        .set({ inspectionStatus: 'approved' })
+        .where(eq(materialBatches.id, updatedInspection.relatedBatchId));
+    }
+
+    res.json(updatedInspection);
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal menyetujui inspeksi' });
+  }
+});
+```
+
+### 4. Fitur Recall Material (Jika Ditemukan Cacat)
+
+Jika ditemukan material cacat, sistem harus bisa melacak semua lokasi pemasangan:
+
+```typescript
+// GET /api/projects/:projectId/materials/batches/:batchId/recall
+router.get('/projects/:projectId/materials/batches/:batchId/recall', requireAuth, async (req, res) => {
+  const { projectId, batchId } = req.params;
+
+  try {
+    const usageRecords = await db.query.materialUsage.findMany({
+      where: and(
+        eq(materialUsage.projectId, projectId),
+        eq(materialUsage.batchId, parseInt(batchId))
+      ),
+      with: {
+        installedByUser: true,
+      },
+    });
+
+    res.json({
+      batchId,
+      totalAffectedLocations: usageRecords.length,
+      locations: usageRecords.map(record => ({
+        location: record.location,
+        quantityUsed: record.quantityUsed,
+        installedDate: record.installedDate,
+        installedBy: record.installedByUser?.name,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal mengambil data recall' });
+  }
+});
+```
+
+---
+
+## Langkah Selanjutnya
+
+Dengan rancangan di atas, Anda memiliki fondasi lengkap untuk Material Traceability. Apakah Anda ingin saya:
+
+1. **Membuat migration script** untuk skema database di atas?
+2. **Menulis integration tests** untuk memverifikasi alur traceability (batch → inventory → usage)?
+3. **Merancang UI form** untuk pencatatan batch material dan penggunaan material?
+4. **Membuat endpoint recall** yang terintegrasi dengan notifikasi otomatis ke Project Manager?
+
+Atau jika Anda ingin menunggu Ester Kristian menyelesaikan task galeri foto terlebih dahulu, saya bisa membantu task lain yang sedang berjalan.
