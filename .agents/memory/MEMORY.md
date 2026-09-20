@@ -1,3 +1,4 @@
 - [Drizzle push in non-interactive shells](drizzle-push-noninteractive.md) — column-conflict prompts can block even force mode; use narrowly scoped SQL, then verify schema convergence.
 - [HEIC converter bundling](heic-converter-bundling.md) — the converter depends on CommonJS globals; preserve API bundle shims and test bundled output in a Node-compatible format.
+- [Temporary API test bundles](temporary-api-test-bundles.md) — resolve entry-only packages absolutely and disable development-only transports when bundles run outside the workspace.
 - [Tenant RLS enforcement](tenant-rls-enforcement.md) — Replit DB connections are superuser and Drizzle may emit empty policy clauses; use a restricted transaction role and verify catalog expressions.
