@@ -1,0 +1,355 @@
+Berikut panduan untuk menangani foto iPhone bertile dengan metadata rotasi tidak lengkap.
+
+---
+
+## Analisis Masalah
+
+Foto iPhone bertile (HEIF dengan tiling) dapat memiliki dua mekanisme orientasi:
+
+1. **EXIF Orientation Flag** — flag standar EXIF (1-8) yang menunjukkan rotasi
+2. **HEIF irot Transform** — transformasi rotasi spesifik format HEIF
+
+**Masalah**: Beberapa foto iPhone (terutama dari iOS lama, Live Photo, atau kondisi tertentu) hanya memiliki EXIF orientation tetapi **tidak memiliki irot transform**. Decoder yang hanya mengikuti irot akan mengabaikan EXIF orientation dan menghasilkan JPEG terbalik.
+
+---
+
+## Strategi Deteksi Metadata Tidak Lengkap
+
+```typescript
+// artifacts/api-server/src/lib/attachment-preview.ts
+
+interface HEIFMetadata {
+  hasExifOrientation: boolean;
+  exifOrientation: number | null;
+  hasIrotTransform: boolean;
+  irotAngle: number | null; // 0, 90, 180, 270
+  isTiled: boolean;
+}
+
+/**
+ * Analisis metadata HEIF untuk mendeteksi ketidaklengkapan.
+ * Mengembalikan metadata yang terdeteksi tanpa memodifikasi gambar.
+ */
+export async function analyzeHEIFMetadata(inputBuffer: Buffer): Promise<HEIFMetadata> {
+  // Gunakan library HEIF parser yang sudah ada di proyek
+  // (misalnya heif-decoder atau custom parser)
+  const metadata = await parseHEIFMetadata(inputBuffer);
+
+  return {
+    hasExifOrientation: metadata.exif?.orientation !== undefined,
+    exifOrientation: metadata.exif?.orientation || null,
+    hasIrotTransform: metadata.transformations?.irot !== undefined,
+    irotAngle: metadata.transformations?.irot?.angle || null,
+    isTiled: metadata.tiles?.length > 1 || false,
+  };
+}
+
+/**
+ * Deteksi apakah metadata rotasi tidak lengkap.
+ * Kasus tidak lengkap:
+ * - Bertile + punya EXIF orientation + tidak punya irot
+ * - Bertile + EXIF orientation != 1 + tidak punya irot
+ */
+export function isIncompleteRotationMetadata(metadata: HEIFMetadata): boolean {
+  // Hanya relevan untuk foto bertile
+  if (!metadata.isTiled) {
+    return false;
+  }
+
+  // Jika punya irot, metadata lengkap (decoder akan mengikuti irot)
+  if (metadata.hasIrotTransform) {
+    return false;
+  }
+
+  // Jika tidak punya irot tapi punya EXIF orientation != 1 (normal)
+  // maka metadata tidak lengkap
+  if (metadata.hasExifOrientation && metadata.exifOrientation !== 1) {
+    return true;
+  }
+
+  return false;
+}
+```
+
+---
+
+## Logika Konversi dengan Fallback
+
+```typescript
+// artifacts/api-server/src/lib/attachment-preview.ts
+
+export async function convertHEIFToJPEG(inputBuffer: Buffer): Promise<Buffer> {
+  const metadata = await analyzeHEIFMetadata(inputBuffer);
+  const isIncomplete = isIncompleteRotationMetadata(metadata);
+
+  if (isIncomplete) {
+    // Kasus metadata tidak lengkap:
+    // Decoder akan mengabaikan EXIF orientation karena tidak ada irot
+    // Kita perlu manual rotate berdasarkan EXIF orientation
+
+    console.warn('[HEIF Converter] Metadata rotasi tidak lengkap, menerapkan fallback EXIF orientation');
+
+    // Decode tanpa rotasi (ikuti irot yang tidak ada)
+    const decodedImage = await decodeHEIF(inputBuffer, { applyTransforms: false });
+
+    // Manual rotate berdasarkan EXIF orientation
+    const rotatedImage = await applyEXIFOrientation(decodedImage, metadata.exifOrientation!);
+
+    return encodeToJPEG(rotatedImage);
+  } else {
+    // Kasus metadata lengkap atau bukan bertile:
+    // Decoder akan mengikuti irot atau EXIF secara otomatis
+    return decodeAndEncodeToJPEG(inputBuffer, { applyTransforms: true });
+  }
+}
+
+/**
+ * Terapkan rotasi berdasarkan EXIF orientation flag.
+ * Orientation 1-8 sesuai standar EXIF.
+ */
+async function applyEXIFOrientation(image: DecodedImage, orientation: number): Promise<DecodedImage> {
+  switch (orientation) {
+    case 1: // Normal
+      return image;
+    case 2: // Flipped horizontally
+      return flipHorizontal(image);
+    case 3: // Rotated 180°
+      return rotate(image, 180);
+    case 4: // Flipped vertically
+      return flipVertical(image);
+    case 5: // Transposed
+      return flipHorizontal(rotate(image, 90));
+    case 6: // Rotated 90° CW
+      return rotate(image, 90);
+    case 7: // Transverse
+      return flipHorizontal(rotate(image, -90));
+    case 8: // Rotated 90° CCW
+      return rotate(image, -90);
+    default:
+      return image;
+  }
+}
+```
+
+---
+
+## Membuat Fixture Apple/iPhone Bertile Tanpa irot
+
+Karena kita tidak bisa mengunggah file biner, berikut panduan membuat fixture dari foto iPhone nyata:
+
+```javascript
+// artifacts/api-server/tests/fixtures/generate-apple-tiled-fixtures.mjs
+// Jalankan sekali dengan foto iPhone asli yang sudah diverifikasi
+
+import { readFile, writeFile } from 'fs/promises';
+import { parseHEIFMetadata, stripIrotTransform } from '../helpers/heif-utils.mjs';
+
+/**
+ * Buat fixture dari foto iPhone bertile yang sudah ada.
+ * Foto harus:
+ * 1. Bertile (isTiled = true)
+ * 2. Punya EXIF orientation != 1
+ * 3. Tidak punya irot (atau irot di-strip manual)
+ */
+async function generateFixtures() {
+  // Baca foto iPhone asli
+  const originalPhoto = await readFile('samples/iphone-tiled-with-exif.heic');
+
+  // Verifikasi metadata
+  const metadata = await parseHEIFMetadata(originalPhoto);
+  console.log('Original metadata:', metadata);
+
+  if (!metadata.isTiled) {
+    throw new Error('Foto tidak bertile');
+  }
+
+  if (!metadata.hasExifOrientation || metadata.exifOrientation === 1) {
+    throw new Error('Foto tidak punya EXIF orientation atau orientation = 1');
+  }
+
+  // Jika foto punya irot, strip irot untuk membuat fixture tidak lengkap
+  let fixtureBuffer = originalPhoto;
+  if (metadata.hasIrotTransform) {
+    console.log('Foto punya irot, stripping irot untuk membuat fixture tidak lengkap...');
+    fixtureBuffer = await stripIrotTransform(originalPhoto);
+  }
+
+  // Verifikasi fixture
+  const fixtureMetadata = await parseHEIFMetadata(fixtureBuffer);
+  console.log('Fixture metadata:', fixtureMetadata);
+
+  if (fixtureMetadata.hasIrotTransform) {
+    throw new Error('Gagal strip irot');
+  }
+
+  // Simpan fixture
+  await writeFile('tests/fixtures/iphone-tiled-no-irot-orient-6.heic', fixtureBuffer);
+  console.log('✅ Fixture berhasil dibuat');
+}
+
+generateFixtures().catch(console.error);
+```
+
+**Catatan penting**: 
+- Foto sampel harus dari iPhone nyata, bukan sintetis
+- Verifikasi metadata dengan tools seperti `exiftool` atau HEIF parser
+- Jika tidak ada foto iPhone dengan kondisi ini, gunakan foto bertile + EXIF orientation, lalu strip irot secara manual
+
+---
+
+## Contract Test untuk Metadata Tidak Lengkap
+
+```typescript
+// artifacts/api-server/tests/attachment-preview-contract.mjs
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import sharp from 'sharp';
+import { convertHEIFToJPEG, analyzeHEIFMetadata, isIncompleteRotationMetadata } from '../src/lib/attachment-preview';
+
+describe('iPhone tiled HEIF with incomplete rotation metadata', () => {
+  it('mendeteksi metadata tidak lengkap pada fixture Apple bertile', async () => {
+    const input = readFileSync('tests/fixtures/iphone-tiled-no-irot-orient-6.heic');
+    const metadata = await analyzeHEIFMetadata(input);
+
+    expect(metadata.isTiled).toBe(true);
+    expect(metadata.hasExifOrientation).toBe(true);
+    expect(metadata.exifOrientation).toBe(6); // Rotated 90° CW
+    expect(metadata.hasIrotTransform).toBe(false);
+
+    expect(isIncompleteRotationMetadata(metadata)).toBe(true);
+  });
+
+  it('menghasilkan JPEG tegak untuk foto bertile tanpa irot', async () => {
+    const input = readFileSync('tests/fixtures/iphone-tiled-no-irot-orient-6.heic');
+    const output = await convertHEIFToJPEG(input);
+
+    // Verifikasi output adalah JPEG valid
+    const outputMetadata = await sharp(output).metadata();
+    expect(outputMetadata.format).toBe('jpeg');
+    expect(outputMetadata.width).toBeGreaterThan(0);
+    expect(outputMetadata.height).toBeGreaterThan(0);
+
+    // Verifikasi orientasi benar (tidak terbalik)
+    // Untuk orientation 6 (90° CW), dimensi harus tertukar
+    // dan "TOP" harus di atas setelah rotasi
+    expect(outputMetadata.orientation).toBeUndefined(); // EXIF orientation sudah di-bake
+  });
+
+  it('tidak memutar ulang foto iPhone bertile yang valid (punya irot)', async () => {
+    const input = readFileSync('tests/fixtures/iphone-tiled-with-irot-orient-6.heic');
+    const metadata = await analyzeHEIFMetadata(input);
+
+    expect(metadata.isTiled).toBe(true);
+    expect(metadata.hasIrotTransform).toBe(true);
+    expect(isIncompleteRotationMetadata(metadata)).toBe(false);
+
+    // Konversi harus mengikuti irot, tidak manual rotate
+    const output = await convertHEIFToJPEG(input);
+    const outputMetadata = await sharp(output).metadata();
+    
+    expect(outputMetadata.format).toBe('jpeg');
+    expect(outputMetadata.orientation).toBeUndefined();
+  });
+
+  it('tidak memutar ulang foto iPhone non-tiled', async () => {
+    const input = readFileSync('tests/fixtures/iphone-non-tiled-orient-6.heic');
+    const metadata = await analyzeHEIFMetadata(input);
+
+    expect(metadata.isTiled).toBe(false);
+    expect(isIncompleteRotationMetadata(metadata)).toBe(false);
+
+    const output = await convertHEIFToJPEG(input);
+    const outputMetadata = await sharp(output).metadata();
+    
+    expect(outputMetadata.format).toBe('jpeg');
+  });
+
+  it('menangani foto bertile dengan EXIF orientation 1 (normal) tanpa irot', async () => {
+    const input = readFileSync('tests/fixtures/iphone-tiled-no-irot-orient-1.heic');
+    const metadata = await analyzeHEIFMetadata(input);
+
+    expect(metadata.isTiled).toBe(true);
+    expect(metadata.exifOrientation).toBe(1);
+    expect(metadata.hasIrotTransform).toBe(false);
+
+    // Orientation 1 = normal, tidak perlu rotasi
+    expect(isIncompleteRotationMetadata(metadata)).toBe(false);
+
+    const output = await convertHEIFToJPEG(input);
+    const outputMetadata = await sharp(output).metadata();
+    
+    expect(outputMetadata.format).toBe('jpeg');
+  });
+
+  it('menangani semua EXIF orientation (1-8) untuk foto bertile tanpa irot', async () => {
+    for (let orientation = 1; orientation <= 8; orientation++) {
+      const fixturePath = `tests/fixtures/iphone-tiled-no-irot-orient-${orientation}.heic`;
+      const input = readFileSync(fixturePath);
+      
+      const output = await convertHEIFToJPEG(input);
+      const outputMetadata = await sharp(output).metadata();
+      
+      expect(outputMetadata.format).toBe('jpeg');
+      expect(outputMetadata.width).toBeGreaterThan(0);
+      expect(outputMetadata.height).toBeGreaterThan(0);
+      expect(outputMetadata.orientation).toBeUndefined();
+    }
+  });
+});
+```
+
+---
+
+## Test untuk Verifikasi Visual (Opsional tapi Disarankan)
+
+Untuk memastikan foto tidak terbalik secara visual, tambahkan test dengan perbandingan pixel:
+
+```typescript
+it('foto bertile tanpa irot menghasilkan JPEG dengan orientasi yang sama dengan foto bertile dengan irot', async () => {
+  // Foto dengan metadata lengkap (punya irot)
+  const inputWithIrot = readFileSync('tests/fixtures/iphone-tiled-with-irot-orient-6.heic');
+  const outputWithIrot = await convertHEIFToJPEG(inputWithIrot);
+
+  // Foto dengan metadata tidak lengkap (tanpa irot)
+  const inputNoIrot = readFileSync('tests/fixtures/iphone-tiled-no-irot-orient-6.heic');
+  const outputNoIrot = await convertHEIFToJPEG(inputNoIrot);
+
+  // Kedua output harus memiliki dimensi yang sama
+  const metadataWithIrot = await sharp(outputWithIrot).metadata();
+  const metadataNoIrot = await sharp(outputNoIrot).metadata();
+
+  expect(metadataNoIrot.width).toBe(metadataWithIrot.width);
+  expect(metadataNoIrot.height).toBe(metadataWithIrot.height);
+
+  // Opsional: bandingkan pixel di posisi tertentu (misalnya sudut atas)
+  // untuk memastikan orientasi visual sama
+  const pixelWithIrot = await getPixelAt(outputWithIrot, 10, 10);
+  const pixelNoIrot = await getPixelAt(outputNoIrot, 10, 10);
+
+  expect(pixelNoIrot).toEqual(pixelWithIrot);
+});
+```
+
+---
+
+## Ringkasan Pendekatan
+
+| Aspek | Strategi |
+|---|---|
+| **Deteksi metadata tidak lengkap** | Analisis HEIF metadata: bertile + EXIF orientation != 1 + tidak ada irot |
+| **Fallback untuk metadata tidak lengkap** | Decode tanpa rotasi, lalu manual rotate berdasarkan EXIF orientation |
+| **Tidak mengganggu foto valid** | Hanya terapkan fallback jika `isIncompleteRotationMetadata()` = true |
+| **Fixture** | Foto iPhone nyata bertile + EXIF orientation, strip irot jika ada |
+| **Test coverage** | Deteksi metadata, konversi tegak, tidak memutar ulang foto valid, semua orientation 1-8 |
+
+---
+
+## Catatan Penting
+
+1. **Jangan membuat fixture sintetis** — harus dari foto iPhone nyata dengan metadata yang diverifikasi
+2. **Verifikasi dengan `exiftool`** — pastikan fixture memang memiliki kondisi yang diinginkan
+3. **Library HEIF parser** — gunakan parser yang sudah ada di proyek, jangan引入 dependency baru tanpa persetujuan
+4. **Tidak tumpang tindih dengan Task #19** — Task #19 menangani orientasi umum, task ini khusus untuk kasus bertile tanpa irot
+5. **Tidak tumpang tindih dengan Task #20** — Task #20 menangani background processing, task ini menangani logika deteksi metadata
+
+Silakan beri tahu saya jika ada aspek yang perlu diperdalam atau jika Anda membutuhkan bantuan untuk membuat fixture dari foto iPhone nyata.
