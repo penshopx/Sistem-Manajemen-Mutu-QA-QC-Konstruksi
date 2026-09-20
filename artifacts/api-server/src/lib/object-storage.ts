@@ -18,7 +18,7 @@ export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
 export const ATTACHMENT_UPLOAD_GRACE_PERIOD_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 100;
-const CLEANUP_HISTORY_RETENTION_BATCH_SIZE = 1_000;
+export const CLEANUP_HISTORY_RETENTION_BATCH_SIZE = 1_000;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -155,23 +155,27 @@ export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
           logger.error({ err, uploadId }, "Failed to release attachment cleanup claim");
         },
       }, now)),
-    deleteEventsBefore: (cutoff) => withBootstrapContext(async (db) => {
-        const expired = await db.select({ id: attachmentCleanupEventsTable.id })
-          .from(attachmentCleanupEventsTable)
-          .where(lt(attachmentCleanupEventsTable.createdAt, cutoff))
-          .limit(CLEANUP_HISTORY_RETENTION_BATCH_SIZE);
-        if (expired.length === 0) return 0;
-        const deleted = await db.delete(attachmentCleanupEventsTable)
-          .where(inArray(attachmentCleanupEventsTable.id, expired.map(({ id }) => id)))
-          .returning({ id: attachmentCleanupEventsTable.id });
-        return deleted.length;
-      }),
+    deleteEventsBefore: deleteExpiredAttachmentCleanupEvents,
     reportRetentionError(err, cutoff) {
       logger.error({ err, cutoff }, "Failed to prune attachment cleanup history");
     },
   }, now);
   logger.info({ ...cleanup, retention }, "Finished orphaned attachment upload cleanup");
   return cleanup;
+}
+
+export function deleteExpiredAttachmentCleanupEvents(cutoff: Date) {
+  return withBootstrapContext(async (db) => {
+    const expired = await db.select({ id: attachmentCleanupEventsTable.id })
+      .from(attachmentCleanupEventsTable)
+      .where(lt(attachmentCleanupEventsTable.createdAt, cutoff))
+      .limit(CLEANUP_HISTORY_RETENTION_BATCH_SIZE);
+    if (expired.length === 0) return 0;
+    const deleted = await db.delete(attachmentCleanupEventsTable)
+      .where(inArray(attachmentCleanupEventsTable.id, expired.map(({ id }) => id)))
+      .returning({ id: attachmentCleanupEventsTable.id });
+    return deleted.length;
+  });
 }
 
 export function startAttachmentUploadCleanup() {
