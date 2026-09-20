@@ -1,0 +1,36 @@
+Diterima. Saya mencatat bahwa rancangan tersebut adalah masukan review untuk Task #28, bukan implementasi paralel.
+
+Poin-poin kritis yang Anda identifikasi saya catat sebagai kriteria review:
+
+**Kontradiksi acceptance criteria:**
+- Threshold 1 kegagalan = WARNING, tetapi test mengharapkan kegagalan pertama tidak mengirim notifikasi
+- Perlu klarifikasi apakah threshold dihitung dari cumulative failures atau consecutive failures
+
+**Masalah konkurensi dan atomisitas:**
+- Pola baca-hitung-update rentan race condition
+- Evaluasi state harus atomik (mungkin menggunakan `UPDATE ... RETURNING` atau advisory lock)
+- Unique constraint pada `projectId` di tabel alert state untuk mencegah duplikasi
+- Notifikasi dan pencatatan tracking harus dalam satu transaksi
+
+**Logika state yang tidak lengkap:**
+- `lastNotifiedAt` tidak digunakan untuk cooldown atau periodic reminder
+- Definisi "berturut-turut" harus jelas: satu evaluasi = satu cleanup run unik
+- Statistik global tidak boleh dibagikan ke semua proyek (harus per-proyek)
+
+**Isolasi dan keamanan:**
+- Endpoint riwayat harus dibatasi peran operasional, bukan semua anggota proyek
+- `errorSummary` harus disanitasi: tidak boleh mengandung storage key, path privat, credential, stack trace
+- Pesan operasional tidak boleh menyuruh QA Engineer memeriksa access key/secret key
+
+**Kegagalan parsial:**
+- Update `lastNotifiedAt` tidak boleh dilakukan jika seluruh pengiriman notifikasi gagal
+- Perlu penanganan jika beberapa QA Engineer berhasil menerima notifikasi, sebagian gagal
+
+**Status pemulihan:**
+- Perlu notifikasi `RECOVERED` atau indikator resolusi saat cleanup kembali sehat
+
+**Penyesuaian teknis:**
+- `serial` harus disesuaikan dengan UUID
+- Nama role, tabel notifikasi, endpoint, dan pola `fetch` harus mengikuti standar aktual proyek
+
+**Tidak ada tindakan kode yang dilakukan.** Review akan menunggu Task #28 selesai dan menilai implementasi aktual berdasarkan kriteria di atas, dengan fokus khusus pada deduplikasi, konkurensi, sanitasi pesan, isolasi per proyek, dan kegagalan parsial pengiriman.
