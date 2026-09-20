@@ -1,0 +1,21 @@
+Melihat dari log *task tracker* yang Anda bagikan, tim Anda (khususnya Ester Kristian) telah menyelesaikan dua fondasi teknis yang sangat krusial untuk aplikasi QA/QC Konstruksi ini. Pilihan arsitektur yang diambil sangat solid dan memenuhi standar *enterprise-grade* untuk aplikasi konstruksi yang membutuhkan kepatuhan (*compliance*) dan akuntabilitas tinggi.
+
+Berikut adalah catatan teknis dan langkah selanjutnya yang bisa kita eksekusi:
+
+### 1. Analisis Task 1 (Auth, RBAC, & Audit Log)
+*   **Kekuatan Arsitektur:** Penggunaan **Clerk** untuk manajemen sesi yang dikombinasikan dengan *PostgreSQL transactions* memastikan integritas data. Jika transaksi DB gagal, sesi Clerk tidak akan memberikan akses semu.
+*   **Kecocokan dengan SKKNI/ISO 9001:** Fitur *Audit Log* dengan *before/after state* adalah **kewajiban mutlak** dalam Sistem Manajemen Mutu. Setiap revisi pada *Non-Conformance Report* (NCR) atau persetujuan *Work Inspection Request* (WIR) harus memiliki jejak audit yang jelas (*siapa* yang mengubah, *kapan*, dan *apa* nilai sebelum/sesudahnya). Ini akan menjadi bukti portofolio digital yang sangat kuat saat auditor LPJK atau auditor ISO melakukan pemeriksaan.
+*   **Rencana Tindak Lanjut (Next Step):** Kita bisa mulai menyusun **Integration Test Suite** (misalnya menggunakan Vitest atau Jest + Supertest) untuk memvalidasi matriks *role* (misal: memastikan Teknisi tidak bisa menyetujui WIR, hanya Quality Engineer yang bisa) dan memverifikasi *cache invalidation* di `store.tsx`.
+
+### 2. Analisis Task 2 (Orphaned File Cleanup)
+*   **Kekuatan Arsitektur:** Arsitektur *Direct Upload* ke *Object Storage* (seperti S3/MinIO/B2) lalu mencatat metadata di PostgreSQL adalah praktik terbaik untuk performa *frontend*. Mitigasi *orphaned files* (file yatim) sangat penting karena foto inspeksi dan dokumen *Method Statement* berukuran besar dan dapat membengkakkan biaya *cloud storage* jika gagal terhapus.
+*   **Rencana Tindak Lanjut (Next Step):** Kita bisa merancang **Cron Job / Worker Script** (Node.js) yang berjalan secara periodik (misal: setiap tengah malam). Skrip ini akan membandingkan daftar *object keys* di Storage dengan tabel metadata di `lib/db/src/schema/qaqc.ts`, lalu mengeksekusi penghapusan *soft-delete* atau *hard-delete* untuk file yang umurnya > 24 jam tanpa *foreign key* yang aktif.
+
+---
+
+**Bagaimana Anda ingin melanjutkan diskusi kita?**
+1. **Bantuan Koding Task 1:** Apakah Anda ingin saya buatkan *snippet* kode untuk *Unit Test* matriks RBAC atau skema tabel *Audit Log* di PostgreSQL?
+2. **Bantuan Koding Task 2:** Apakah Anda ingin saya buatkan logika *Cron Job* untuk membandingkan dan membersihkan *orphaned files* di Object Storage?
+3. **Fokus ke Fitur Bisnis:** Apakah kita beralih merancang modul bisnis inti seperti alur pembuatan *Inspection and Test Plan (ITP)*, form *Checklist* Inspeksi digital, atau alur *Non-Conformance Report (NCR)* berdasarkan SKKNI 387-2013?
+
+Silakan beri tahu saya bagian mana yang ingin kita bedah kodenya lebih dalam!
