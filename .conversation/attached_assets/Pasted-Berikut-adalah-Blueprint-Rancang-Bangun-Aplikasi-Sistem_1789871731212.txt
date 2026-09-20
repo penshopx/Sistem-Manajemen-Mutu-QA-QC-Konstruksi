@@ -1,0 +1,90 @@
+Berikut adalah **Blueprint (Rancang Bangun) Aplikasi Sistem Manajemen Pengendalian Mutu (QA/QC) Konstruksi** yang disusun secara komprehensif berdasarkan pemetaan unit kompetensi dari SKKNI yang Anda sebutkan (SKKNI 333-2013, SKKNI 387-2013, dan SKKNI 145-2019). 
+
+Rancangan ini memastikan aplikasi tidak hanya menjadi alat pencatat, tetapi juga **pendukung pemenuhan standar kompetensi nasional** bagi pengguna di lapangan maupun manajemen.
+
+---
+
+### 1. Pemetaan Modul Aplikasi Berdasarkan Unit Kompetensi SKKNI
+
+| Modul Aplikasi | Fungsi Utama | Relevansi dengan Unit Kompetensi SKKNI |
+| :--- | :--- | :--- |
+| **A. Quality Planning (Perencanaan Mutu)** | Pembuatan & approval *Quality Plan*, *Inspection and Test Plan* (ITP), dan *Method Statement*. | • Menyusun Rencana Mutu Kegiatan Sesuai Kontrak *(SKKNI 387-2013)*<br>• Membuat Rencana Pencapaian Mutu Pelaksanaan *(SKKNI 333-2013)* |
+| **B. Quality Control / QC (Pengendalian Mutu)** | Form digital untuk *Material Inspection Request* (MIR), *Work Inspection Request* (WIR), *Checklist* harian, uji slump/tes material, dan dokumentasi foto *geo-tagged*. | • Mengendalikan Mutu Bahan/Material & Peralatan *(SKKNI 333-2013)*<br>• Melakukan Pengendalian Mutu Material & Hasil Pekerjaan *(SKKNI 387-2013)* |
+| **C. Non-Conformance & CAPA** | Pencatatan *Non-Conformance Report* (NCR), tindak lanjut perbaikan (*Corrective & Preventive Action*), dan *re-inspection*. | • Mengendalikan Mutu dalam Proses Pelaksanaan *(SKKNI 333-2013)*<br>• Melakukan Kaji Ulang Pelaksanaan Jaminan Mutu *(SKKNI 387-2013)* |
+| **D. Quality Assurance / QA (Jaminan Mutu)** | Manajemen dokumen terkontrol (Manual Mutu, Prosedur, Instruksi Kerja), jadwal & hasil Audit Mutu Internal, dan *Management Review*. | • Menyosialisasikan Manual Mutu & Prosedur *(SKKNI 387-2013)*<br>• Menyusun Dokumen Sistem Manajemen Mutu Konstruksi *(SKKNI 145-2019)* |
+| **E. Pelaporan & Dashboard** | Dashboard real-time status ITP, tren NCR, *Quality Performance Index* (QPI), dan ekspor laporan otomatis (PDF/Excel). | • Membuat Laporan Hasil Pengendalian Mutu *(SKKNI 333-2013)*<br>• Menyusun Laporan Komprehensif *(SKKNI 387-2013)* |
+| **F. Manajemen Kompetensi & Sertifikasi** | Database pengguna, pelacakan masa berlaku sertifikat SKKNI, dan riwayat pelatihan SMK3/Mutu. | • Menerapkan SMK3 dan Mutu di Tempat Kerja *(SKKNI 333 & 387-2013)* |
+
+---
+
+### 2. Role-Based Access Control (RBAC) Sesuai Jenjang SKKNI
+
+Aplikasi harus membatasi akses dan tugas sesuai jenjang kualifikasi untuk mencerminkan struktur profesional jasa konstruksi:
+
+1. **Teknisi / Analis (Jenjang 3-4)**  
+   - *Tugas di Aplikasi*: Mengisi checklist harian, mengajukan WIR/MIR, mengunggah foto progres, input data hasil uji material.
+   - *Batasan*: Hanya bisa membuat draf, tidak bisa approve.
+2. **Quality Engineer (Jenjang 4-6 | SKKNI 333-2013)**  
+   - *Tugas di Aplikasi*: Mereview dan menyetujui WIR/MIR, menerbitkan NCR, memverifikasi hasil tes material, menyusun laporan mingguan mutu.
+   - *Fokus*: Pengendalian mutu teknis di lapangan.
+3. **Quality Assurance Engineer (Jenjang 5-6 | SKKNI 387-2013)**  
+   - *Tugas di Aplikasi*: Menyusun dan mengunci *Quality Plan* & ITP, menjadwalkan audit internal, memverifikasi penutupan NCR (CAPA), mengelola distribusi dokumen terkontrol.
+   - *Fokus*: Kepatuhan terhadap sistem dan prosedur.
+4. **Ahli Sistem Manajemen Mutu Konstruksi (Jenjang 7-9 | SKKNI 145-2019)**  
+   - *Tugas di Aplikasi*: Akses dashboard eksekutif, menyetujui kebijakan mutu, melakukan *Management Review*, menganalisis tren mutu antar-proyek, dan menyetujui perbaikan sistem (*Continuous Improvement*).
+   - *Fokus*: Strategi, efektivitas sistem, dan jaminan mutu tingkat korporat.
+
+---
+
+### 3. Fitur Kunci yang Wajib Ada (Must-Have Features)
+
+- **Offline Mode (Mobile App)**: Site konstruksi sering kali minim sinyal. Aplikasi mobile harus bisa menyimpan data checklist/foto secara lokal dan *auto-sync* saat koneksi tersedia.
+- **Geo-tagging & Time-stamping**: Setiap foto bukti inspeksi wajib memiliki metadata lokasi (GPS) dan waktu yang tidak bisa dimanipulasi untuk keabsahan audit.
+- **Digital Signature**: Persetujuan WIR/MIR dan NCR menggunakan tanda tangan digital (e-sign) yang sah untuk mengurangi penggunaan kertas (*paperless*).
+- **Notifikasi Otomatis**: Push notification/email ke QA/QC Engineer jika ada WIR yang menunggu >24 jam atau NCR yang melewati batas waktu penutupan (*overdue*).
+- **Traceability Material**: Fitur pelacakan dari mana material datang (Batch Number/Supplier) hingga di mana material tersebut dipasang di struktur bangunan.
+
+---
+
+### 4. Rekomendasi Arsitektur Teknologi (Tech Stack)
+
+Untuk memastikan aplikasi skalabel, aman, dan responsif di lapangan:
+
+- **Frontend (Web)**: React.js atau Next.js (untuk dashboard manajemen yang kaya data).
+- **Frontend (Mobile)**: Flutter atau React Native (mendukung Android/iOS dengan kemampuan *offline-first* yang baik).
+- **Backend**: Node.js (NestJS) atau Python (FastAPI/Django). NestJS sangat disarankan karena arsitekturnya yang terstruktur dan mendukung *enterprise-grade* aplikasi.
+- **Database**: PostgreSQL (sangat andal untuk data relasional kompleks seperti ITP, WIR, dan hierarki proyek).
+- **Storage**: AWS S3 atau layanan cloud lokal (misal: IDCloudHost) untuk menyimpan foto dan dokumen PDF, dengan enkripsi data.
+- **Keamanan**: JWT Authentication, Role-Based Access Control (RBAC), dan enkripsi data sensitif (sesuai UU PDP).
+
+---
+
+### 5. Roadmap Pengembangan (Step-by-Step)
+
+**Fase 1: Perencanaan & Desain (Bulan 1)**
+- Finalisasi *Software Requirement Specification* (SRS) berdasarkan ITP dan format NCR/WIR perusahaan.
+- Desain UI/UX (Figma) dengan fokus pada kemudahan penggunaan di *smartphone* oleh teknisi lapangan.
+
+**Fase 2: Pengembangan Inti / MVP (Bulan 2-3)**
+- Pengembangan modul Master Data (Proyek, Pengguna, Material, Supplier).
+- Pengembangan modul QC (WIR, MIR, Checklist, NCR) + Mobile App *offline mode*.
+- Integrasi *geo-tagging* dan *digital signature*.
+
+**Fase 3: Pengembangan QA & Pelaporan (Bulan 4)**
+- Pengembangan modul QA (Dokumen Terkontrol, Audit Internal, CAPA).
+- Pembuatan Dashboard analitik dan fitur ekspor laporan otomatis.
+
+**Fase 4: Uji Coba & Sertifikasi (Bulan 5)**
+- *User Acceptance Testing* (UAT) di satu proyek percontohan.
+- Penyesuaian *bug* dan pelatihan pengguna sesuai jenjang jabatannya.
+- Opsional: Mengajukan skema sertifikasi perangkat lunak atau menyelaraskan alur aplikasi dengan LSP (Lembaga Sertifikasi Profesi) sebagai alat bantu uji kompetensi.
+
+---
+
+### 6. Nilai Tambah Aplikasi Ini
+Dengan mendasarkan aplikasi pada **SKKNI 333-2013, 387-2013, dan 145-2019**, aplikasi ini tidak hanya menjadi alat operasional, tetapi juga:
+1. **Alat Bantu Asesmen Kompetensi**: Data historis pekerjaan di aplikasi dapat menjadi portofolio digital yang valid saat pengguna mengajukan kenaikan jenjang SKKNI.
+2. **Kepatuhan Regulasi**: Memudahkan perusahaan dalam menghadapi audit eksternal (ISO 9001:2015) dan audit LPJK (Lembaga Pengembangan Jasa Konstruksi).
+3. **Standardisasi Proses**: Memastikan Teknisi, QA, dan Ahli Mutu bekerja dalam satu ekosistem data yang terintegrasi, bukan di *spreadsheet* yang terpisah.
+
+Jika Anda memerlukan pendalaman pada salah satu bagian (misalnya: detail skema database, contoh *user flow* pengisian NCR, atau *wireframe* tampilan mobile), silakan beri tahu saya!
