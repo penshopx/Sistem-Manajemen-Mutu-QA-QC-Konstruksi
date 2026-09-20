@@ -6,11 +6,23 @@ import {
   AlertOctagon, 
   FileStack, 
   BarChart4,
-  ActivitySquare
+  ActivitySquare,
+  LogOut,
+  Users
 } from "lucide-react";
+import { useClerk, useUser } from "@clerk/react";
+import { useStore } from "@/lib/store";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
+  const { signOut } = useClerk();
+  const { user } = useUser();
+  const { state } = useStore();
+  const currentUser = state.currentUser;
+  const project = state.projects[0];
+  const roleLabel = currentUser?.role.replaceAll("_", " ") ?? "TEAM MEMBER";
+  const displayName = user?.fullName || user?.primaryEmailAddress?.emailAddress || currentUser?.name || "Anggota Tim";
+  const initials = displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 
   const navItems = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -19,6 +31,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     { href: "/ncr", label: "NCR & CAPA", icon: AlertOctagon },
     { href: "/documents", label: "Documents", icon: FileStack },
     { href: "/reports", label: "Reports", icon: BarChart4 },
+    { href: "/team", label: "Team", icon: Users },
   ];
 
   return (
@@ -63,12 +76,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="p-4 border-t border-border">
           <div className="flex items-center gap-3 px-2">
             <div className="h-8 w-8 rounded-sm bg-muted flex items-center justify-center border border-border">
-              <span className="font-display text-sm font-bold text-foreground">AS</span>
+              <span className="font-display text-sm font-bold text-foreground">{initials}</span>
             </div>
             <div>
-              <div className="text-sm font-bold">Andi Subroto</div>
-              <div className="text-xs font-mono text-muted-foreground">QA Engineer</div>
+              <div className="max-w-32 truncate text-sm font-bold">{displayName}</div>
+              <div className="text-xs font-mono text-muted-foreground">{roleLabel}</div>
             </div>
+            <button title="Keluar" className="ml-auto text-muted-foreground hover:text-foreground" onClick={() => signOut({ redirectUrl: import.meta.env.BASE_URL })}>
+              <LogOut className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </aside>
@@ -84,7 +100,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               Live Control
             </span>
             <span className="font-mono text-xs text-muted-foreground">
-              PRJ-GPI-24 // Gedung Pusat Inovasi
+              {project.code} // {project.name}
             </span>
           </div>
           <div className="flex items-center gap-4">

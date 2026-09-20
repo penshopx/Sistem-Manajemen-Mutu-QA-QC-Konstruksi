@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: workspace
+    description: Shared QA/QC project workspace
 paths:
   /healthz:
     get:
@@ -24,7 +26,110 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /workspace:
+    get:
+      operationId: getWorkspace
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      summary: Get the shared project workspace
+      responses:
+        "200":
+          description: Shared workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+        "401": { description: Unauthenticated }
+        "403": { description: Not a project member }
+  /workspace/{collection}:
+    post:
+      operationId: createWorkspaceRecord
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Collection"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordInput"
+      responses:
+        "201":
+          description: Created record
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenericRecord" }
+        "403": { description: Insufficient role }
+  /workspace/{collection}/{id}:
+    patch:
+      operationId: updateWorkspaceRecord
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Collection"
+        - $ref: "#/components/parameters/RecordId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordUpdate" }
+      responses:
+        "200":
+          description: Updated record
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenericRecord" }
+        "403": { description: Insufficient role }
+        "404": { description: Record not found }
+    delete:
+      operationId: deleteWorkspaceRecord
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Collection"
+        - $ref: "#/components/parameters/RecordId"
+      responses:
+        "204": { description: Deleted }
+        "403": { description: Insufficient role }
+        "404": { description: Record not found }
+  /workspace/invitations:
+    post:
+      operationId: inviteProjectMember
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      summary: Invite a member to the current project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectInvitationInput" }
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectMember" }
+        "403": { description: Only QA Engineers can invite members }
 components:
+  securitySchemes:
+    clerkSession:
+      type: apiKey
+      in: cookie
+      name: __session
+  parameters:
+    Collection:
+      name: collection
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [qualityPlans, itps, inspections, ncrs, documents, audits]
+    RecordId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +138,108 @@ components:
           type: string
       required:
         - status
+    UserContext:
+      type: object
+      required: [id, name, role, permissions]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role:
+          type: string
+          enum: [QA_ENGINEER, QC_INSPECTOR, SITE_MANAGER, PROJECT_MANAGER]
+        permissions:
+          type: array
+          items: { type: string }
+    GenericRecord:
+      allOf:
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+        - $ref: "#/components/schemas/RecordUpdate"
+    RecordInput:
+      allOf:
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+        - $ref: "#/components/schemas/RecordUpdate"
+    RecordUpdate:
+      type: object
+      additionalProperties: true
+    Project:
+      type: object
+      required: [id, name, code, client, contractor, progress, qualityScore, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        code: { type: string }
+        client: { type: string }
+        contractor: { type: string }
+        progress: { type: integer }
+        qualityScore: { type: integer }
+        status: { type: string }
+    Activity:
+      type: object
+      required: [id, action, subject, actor, timestamp]
+      properties:
+        id: { type: string }
+        action: { type: string }
+        subject: { type: string }
+        actor: { type: string }
+        timestamp: { type: string, format: date-time }
+    ProjectMember:
+      type: object
+      required: [id, name, email, role, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        role:
+          type: string
+          enum: [QA_ENGINEER, QC_INSPECTOR, SITE_MANAGER, PROJECT_MANAGER]
+        status:
+          type: string
+          enum: [active, invited]
+    ProjectInvitationInput:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [QA_ENGINEER, QC_INSPECTOR, SITE_MANAGER, PROJECT_MANAGER]
+    Workspace:
+      type: object
+      required: [projects, qualityPlans, itps, inspections, ncrs, documents, audits, activities, members, currentUser]
+      properties:
+        projects:
+          type: array
+          items: { $ref: "#/components/schemas/Project" }
+        qualityPlans:
+          type: array
+          items: { $ref: "#/components/schemas/GenericRecord" }
+        itps:
+          type: array
+          items: { $ref: "#/components/schemas/GenericRecord" }
+        inspections:
+          type: array
+          items: { $ref: "#/components/schemas/GenericRecord" }
+        ncrs:
+          type: array
+          items: { $ref: "#/components/schemas/GenericRecord" }
+        documents:
+          type: array
+          items: { $ref: "#/components/schemas/GenericRecord" }
+        audits:
+          type: array
+          items: { $ref: "#/components/schemas/GenericRecord" }
+        activities:
+          type: array
+          items: { $ref: "#/components/schemas/Activity" }
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/ProjectMember" }
+        currentUser:
+          $ref: "#/components/schemas/UserContext"
 
