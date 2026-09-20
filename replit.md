@@ -1,6 +1,6 @@
 # Sistem Manajemen Mutu QA/QC Konstruksi
 
-Video pengenalan untuk aplikasi pengendalian mutu konstruksi berbasis alur QA/QC dan jenjang kompetensi SKKNI.
+Aplikasi web dan video pengenalan untuk pengendalian mutu konstruksi berbasis alur QA/QC dan jenjang kompetensi SKKNI.
 
 ## Run & Operate
 
@@ -22,6 +22,9 @@ Video pengenalan untuk aplikasi pengendalian mutu konstruksi berbasis alur QA/QC
 
 ## Where things live
 
+- `artifacts/qa-qc-konstruksi/` — website aplikasi QA/QC utama pada route root.
+- `artifacts/qa-qc-konstruksi/src/lib/store.tsx` — data contoh dan persistence localStorage.
+- `artifacts/qa-qc-konstruksi/src/pages/` — dashboard, rencana mutu, inspeksi, NCR/CAPA, dokumen, dan laporan.
 - `artifacts/qa-qc-konstruksi-video/` — video animasi 90 detik.
 - `artifacts/qa-qc-konstruksi-video/src/components/video/VideoTemplate.tsx` — urutan, durasi, audio, dan komposisi utama.
 - `artifacts/qa-qc-konstruksi-video/src/components/video/video_scenes/Scenes.tsx` — sepuluh scene video.
@@ -29,13 +32,14 @@ Video pengenalan untuk aplikasi pengendalian mutu konstruksi berbasis alur QA/QC
 
 ## Architecture decisions
 
+- Website MVP menggunakan persistence localStorage agar seluruh CRUD langsung berfungsi tanpa ketergantungan backend.
 - Rasio video dikunci 16:9 untuk presentasi, YouTube, dan web.
 - Durasi total 90 detik dibagi ke sepuluh scene dengan musik instrumental yang tersinkron.
 - Kontrol preview hanya muncul dalam iframe Replit; hasil ekspor tetap bersih tanpa kontrol.
 
 ## Product
 
-Video menjelaskan masalah data mutu yang terfragmentasi dan alur terpadu RMK/ITP, MIR/WIR, bukti inspeksi, NCR/CAPA, dokumen terkendali, audit, dashboard, serta peran berbasis SKKNI.
+Website mendukung dashboard mutu, RMK/ITP, MIR/WIR, checklist inspeksi, bukti lapangan, NCR/CAPA, dokumen terkendali, audit, dan laporan. Video menjelaskan nilai serta alur produk tersebut.
 
 ## User preferences
 
