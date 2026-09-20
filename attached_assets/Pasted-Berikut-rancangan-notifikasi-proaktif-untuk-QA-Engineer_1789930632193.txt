@@ -1,0 +1,490 @@
+Berikut rancangan notifikasi proaktif untuk QA Engineer saat kegagalan pembersihan storage berulang.
+
+---
+
+## 1. Schema untuk Tracking Alert State
+
+```typescript
+// lib/db/src/schema/operations.ts (tambahan)
+import { pgTable, serial, uuid, varchar, timestamp, integer, text, jsonb } from 'drizzle-orm/pg-core';
+import { projects } from './projects';
+
+export const storageCleanupAlerts = pgTable('storage_cleanup_alerts', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  
+  // State tracking untuk de-duplikasi
+  currentAlertLevel: varchar('current_alert_level', { length: 20 }).default('OK').notNull(), // 'OK' | 'WARNING' | 'CRITICAL'
+  consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
+  lastNotifiedAt: timestamp('last_notified_at'),
+  lastNotifiedLevel: varchar('last_notified_level', { length: 20 }),
+  
+  // Snapshot data saat notifikasi terakhir
+  lastFailureCount: integer('last_failure_count').default(0),
+  lastErrorSummary: text('last_error_summary'),
+  
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const storageCleanupNotifications = pgTable('storage_cleanup_notifications', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  userId: uuid('user_id').notNull(), // QA Engineer yang diberi notifikasi
+  
+  alertLevel: varchar('alert_level', { length: 20 }).notNull(),
+  consecutiveFailures: integer('consecutive_failures').notNull(),
+  failureCount: integer('failure_count').notNull(),
+  errorSummary: text('error_summary'),
+  
+  // In-app notification
+  notificationId: integer('notification_id'), // Relasi ke tabel notifications umum (jika ada)
+  
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+```
+
+---
+
+## 2. Service untuk Evaluasi Health dan Trigger Notifikasi
+
+```typescript
+// artifacts/api-server/src/services/cleanup-health-monitor.ts
+import { db } from '../lib/db';
+import { storageCleanupAlerts, storageCleanupNotifications, storageCleanupLogs } from '../../lib/db/schema';
+import { eq, and, desc } from 'drizzle-orm';
+import { createNotification } from './notification-service';
+
+const THRESHOLD_WARNING = 1;   // 1 kegagalan berturut-turut
+const THRESHOLD_CRITICAL = 3;  // 3 kegagalan berturut-turut
+
+export type AlertLevel = 'OK' | 'WARNING' | 'CRITICAL';
+
+interface CleanupStats {
+  projectId: string;
+  filesPending: number;
+  filesDeleted: number;
+  filesRetained: number;
+  filesFailed: number;
+  errorSummary: string | null;
+}
+
+/**
+ * Evaluasi health pembersihan storage setelah setiap run.
+ * Trigger notifikasi jika alert level naik.
+ */
+export async function evaluateCleanupHealth(stats: CleanupStats): Promise<void> {
+  const { projectId, filesFailed, errorSummary } = stats;
+
+  // 1. Ambil atau buat alert state untuk proyek ini
+  let [alertState] = await db.select()
+    .from(storageCleanupAlerts)
+    .where(eq(storageCleanupAlerts.projectId, projectId))
+    .limit(1);
+
+  if (!alertState) {
+    [alertState] = await db.insert(storageCleanupAlerts).values({
+      projectId,
+      currentAlertLevel: 'OK',
+      consecutiveFailures: 0,
+    }).returning();
+  }
+
+  // 2. Hitung consecutive failures dan alert level baru
+  let consecutiveFailures = alertState.consecutiveFailures;
+  let newAlertLevel: AlertLevel = 'OK';
+
+  if (filesFailed > 0) {
+    consecutiveFailures += 1;
+    
+    if (consecutiveFailures >= THRESHOLD_CRITICAL) {
+      newAlertLevel = 'CRITICAL';
+    } else if (consecutiveFailures >= THRESHOLD_WARNING) {
+      newAlertLevel = 'WARNING';
+    }
+  } else {
+    // Reset counter jika tidak ada kegagalan
+    consecutiveFailures = 0;
+    newAlertLevel = 'OK';
+  }
+
+  // 3. Update alert state
+  await db.update(storageCleanupAlerts)
+    .set({
+      currentAlertLevel: newAlertLevel,
+      consecutiveFailures,
+      lastFailureCount: filesFailed,
+      lastErrorSummary: errorSummary,
+      updatedAt: new Date(),
+    })
+    .where(eq(storageCleanupAlerts.id, alertState.id));
+
+  // 4. Trigger notifikasi jika alert level naik
+  const previousLevel = alertState.currentAlertLevel;
+  const shouldNotify = shouldTriggerNotification(previousLevel, newAlertLevel, alertState.lastNotifiedAt);
+
+  if (shouldNotify) {
+    await notifyQAEngineers({
+      projectId,
+      alertLevel: newAlertLevel,
+      consecutiveFailures,
+      failureCount: filesFailed,
+      errorSummary,
+    });
+
+    // Update lastNotifiedAt
+    await db.update(storageCleanupAlerts)
+      .set({
+        lastNotifiedAt: new Date(),
+        lastNotifiedLevel: newAlertLevel,
+      })
+      .where(eq(storageCleanupAlerts.id, alertState.id));
+  }
+}
+
+/**
+ * Tentukan apakah notifikasi harus dikirim.
+ * Aturan:
+ * - Kirim jika alert level naik (OK → WARNING, WARNING → CRITICAL, OK → CRITICAL)
+ * - Jangan kirim jika level sama atau turun
+ */
+function shouldTriggerNotification(
+  previousLevel: AlertLevel,
+  newLevel: AlertLevel,
+  lastNotifiedAt: Date | null
+): boolean {
+  // Level naik
+  if (previousLevel === 'OK' && (newLevel === 'WARNING' || newLevel === 'CRITICAL')) {
+    return true;
+  }
+  if (previousLevel === 'WARNING' && newLevel === 'CRITICAL') {
+    return true;
+  }
+
+  // Level turun atau sama → jangan kirim
+  return false;
+}
+
+/**
+ * Kirim notifikasi ke semua QA Engineer di proyek.
+ */
+async function notifyQAEngineers(params: {
+  projectId: string;
+  alertLevel: AlertLevel;
+  consecutiveFailures: number;
+  failureCount: number;
+  errorSummary: string | null;
+}): Promise<void> {
+  const { projectId, alertLevel, consecutiveFailures, failureCount, errorSummary } = params;
+
+  // 1. Cari semua QA Engineer di proyek
+  const qaEngineers = await db.query.projectMembers.findMany({
+    where: and(
+      eq(projectMembers.projectId, projectId),
+      inArray(projectMembers.role, ['QA_ENGINEER', 'QA_ENGINEER_MADYA', 'QA_MANAGER'])
+    ),
+    with: {
+      user: true,
+    },
+  });
+
+  if (qaEngineers.length === 0) {
+    console.warn(`[CleanupHealth] Tidak ada QA Engineer di proyek ${projectId}. Notifikasi tidak dikirim.`);
+    return;
+  }
+
+  // 2. Buat pesan notifikasi
+  const message = buildNotificationMessage({
+    alertLevel,
+    consecutiveFailures,
+    failureCount,
+    errorSummary,
+  });
+
+  // 3. Kirim notifikasi ke setiap QA Engineer
+  for (const member of qaEngineers) {
+    try {
+      const notification = await createNotification({
+        userId: member.user.id,
+        projectId,
+        type: 'STORAGE_CLEANUP_ALERT',
+        title: getMessageTitle(alertLevel),
+        message,
+        severity: alertLevel === 'CRITICAL' ? 'high' : 'medium',
+        metadata: {
+          alertLevel,
+          consecutiveFailures,
+          failureCount,
+        },
+      });
+
+      // Catat ke tabel tracking
+      await db.insert(storageCleanupNotifications).values({
+        projectId,
+        userId: member.user.id,
+        alertLevel,
+        consecutiveFailures,
+        failureCount,
+        errorSummary,
+        notificationId: notification.id,
+      });
+
+    } catch (error) {
+      // Log error tapi jangan block proses
+      console.error(`[CleanupHealth] Gagal mengirim notifikasi ke user ${member.user.id}:`, error);
+    }
+  }
+}
+
+function buildNotificationMessage(params: {
+  alertLevel: AlertLevel;
+  consecutiveFailures: number;
+  failureCount: number;
+  errorSummary: string | null;
+}): string {
+  const { alertLevel, consecutiveFailures, failureCount, errorSummary } = params;
+
+  let message = `Pembersihan storage mengalami ${consecutiveFailures} kegagalan berturut-turut.\n\n`;
+  message += `Total file gagal: ${failureCount}\n`;
+  
+  if (errorSummary) {
+    message += `Error terakhir: ${errorSummary}\n\n`;
+  }
+
+  message += `Langkah pemeriksaan:\n`;
+  message += `1. Periksa kredensial object storage (access key, secret key)\n`;
+  message += `2. Periksa quota penyimpanan (apakah sudah penuh?)\n`;
+  message += `3. Periksa log error detail di dashboard admin\n`;
+  
+  if (alertLevel === 'CRITICAL') {
+    message += `4. Hubungi administrator sistem jika masalah berlanjut\n`;
+  }
+
+  return message;
+}
+
+function getMessageTitle(alertLevel: AlertLevel): string {
+  if (alertLevel === 'CRITICAL') {
+    return '🚨 Kegagalan Pembersihan Storage Kritis';
+  }
+  return '⚠️ Kegagalan Pembersihan Storage';
+}
+```
+
+---
+
+## 3. Integrasi ke Cleanup Job
+
+```typescript
+// artifacts/api-server/src/lib/cleanup-operations.ts
+import { evaluateCleanupHealth } from '../services/cleanup-health-monitor';
+
+export async function runOrphanedFileCleanup() {
+  let stats = { pending: 0, deleted: 0, retained: 0, failed: 0 };
+  let errorSummary = null;
+
+  try {
+    // ... logika cleanup yang sudah ada ...
+
+  } catch (error) {
+    console.error('[Cleanup Job] Critical failure:', error);
+    errorSummary = error.message;
+  }
+
+  // Catat log
+  await db.insert(storageCleanupLogs).values({
+    filesPending: stats.pending,
+    filesDeleted: stats.deleted,
+    filesRetained: stats.retained,
+    filesFailed: stats.failed,
+    errorSummary: errorSummary,
+  });
+
+  // Evaluasi health dan trigger notifikasi jika perlu
+  // Lakukan untuk setiap proyek yang memiliki cleanup run
+  const projectIds = await getProjectIdsWithCleanupActivity();
+  for (const projectId of projectIds) {
+    try {
+      await evaluateCleanupHealth({
+        projectId,
+        ...stats,
+        errorSummary,
+      });
+    } catch (error) {
+      console.error(`[CleanupHealth] Gagal evaluasi health untuk proyek ${projectId}:`, error);
+    }
+  }
+
+  return stats;
+}
+```
+
+---
+
+## 4. Endpoint untuk Melihat Riwayat Alert (Opsional)
+
+```typescript
+// artifacts/api-server/src/routes/operations.ts
+router.get('/projects/:projectId/cleanup-alerts', requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const userId = req.auth.userId;
+
+  // Verifikasi akses
+  const hasAccess = await checkProjectAccess(userId, projectId);
+  if (!hasAccess) {
+    return res.status(403).json({ error: 'Akses ditolak' });
+  }
+
+  const alerts = await db.query.storageCleanupNotifications.findMany({
+    where: eq(storageCleanupNotifications.projectId, projectId),
+    orderBy: [desc(storageCleanupNotifications.createdAt)],
+    limit: 50,
+  });
+
+  res.json(alerts);
+});
+```
+
+---
+
+## 5. UI untuk Menampilkan Notifikasi
+
+```tsx
+// artifacts/qa-qc-konstruksi/src/components/StorageCleanupAlerts.tsx
+function StorageCleanupAlerts({ projectId }: { projectId: string }) {
+  const { data: alerts } = useQuery({
+    queryKey: ['cleanup-alerts', projectId],
+    queryFn: () => fetch(`/api/projects/${projectId}/cleanup-alerts`).then(r => r.json()),
+  });
+
+  if (!alerts || alerts.length === 0) return null;
+
+  return (
+    <div className="cleanup-alerts">
+      <h3>Peringatan Pembersihan Storage</h3>
+      {alerts.map(alert => (
+        <div key={alert.id} className={`alert alert-${alert.alertLevel.toLowerCase()}`}>
+          <div className="alert-header">
+            <span className="alert-level">{alert.alertLevel}</span>
+            <span className="alert-time">{formatTimeAgo(alert.createdAt)}</span>
+          </div>
+          <div className="alert-body">
+            <p>{alert.consecutiveFailures} kegagalan berturut-turut</p>
+            <p>{alert.failureCount} file gagal dibersihkan</p>
+            {alert.errorSummary && (
+              <p className="error-summary">{alert.errorSummary}</p>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+## 6. Test Cases
+
+```typescript
+// artifacts/api-server/tests/cleanup-health-monitor.test.mjs
+import { describe, it, expect, beforeEach } from 'vitest';
+
+describe('Cleanup Health Monitor', () => {
+  it('tidak mengirim notifikasi saat 1 kegagalan pertama (masih OK)', async () => {
+    await evaluateCleanupHealth({
+      projectId,
+      filesFailed: 5,
+      errorSummary: 'Storage timeout',
+    });
+
+    const notifications = await getNotifications(projectId);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it('mengirim notifikasi WARNING saat 1 kegagalan berturut-turut', async () => {
+    // Run 1: 1 kegagalan
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 });
+    
+    const notifications = await getNotifications(projectId);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].alertLevel).toBe('WARNING');
+  });
+
+  it('mengirim notifikasi CRITICAL saat 3 kegagalan berturut-turut', async () => {
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 }); // WARNING
+    await evaluateCleanupHealth({ projectId, filesFailed: 2 }); // masih WARNING
+    await evaluateCleanupHealth({ projectId, filesFailed: 3 }); // CRITICAL
+
+    const notifications = await getNotifications(projectId);
+    expect(notifications).toHaveLength(2); // WARNING + CRITICAL
+    expect(notifications[1].alertLevel).toBe('CRITICAL');
+  });
+
+  it('tidak mengirim notifikasi berulang untuk level yang sama', async () => {
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 }); // WARNING
+    await evaluateCleanupHealth({ projectId, filesFailed: 2 }); // masih WARNING, tidak kirim
+    await evaluateCleanupHealth({ projectId, filesFailed: 3 }); // masih WARNING, tidak kirim
+
+    const notifications = await getNotifications(projectId);
+    expect(notifications).toHaveLength(1); // Hanya WARNING pertama
+  });
+
+  it('reset counter saat tidak ada kegagalan', async () => {
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 }); // WARNING
+    await evaluateCleanupHealth({ projectId, filesFailed: 0 }); // Reset
+    
+    const alertState = await getAlertState(projectId);
+    expect(alertState.consecutiveFailures).toBe(0);
+    expect(alertState.currentAlertLevel).toBe('OK');
+  });
+
+  it('mengirim notifikasi baru jika level naik setelah reset', async () => {
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 }); // WARNING
+    await evaluateCleanupHealth({ projectId, filesFailed: 0 }); // Reset ke OK
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 }); // WARNING lagi
+
+    const notifications = await getNotifications(projectId);
+    expect(notifications).toHaveLength(2); // 2x WARNING
+  });
+
+  it('notifikasi merangkum jumlah kegagalan dan langkah pemeriksaan', async () => {
+    await evaluateCleanupHealth({
+      projectId,
+      filesFailed: 5,
+      errorSummary: 'Storage quota exceeded',
+    });
+
+    const notifications = await getNotifications(projectId);
+    expect(notifications[0].message).toContain('5 kegagalan berturut-turut');
+    expect(notifications[0].message).toContain('Langkah pemeriksaan');
+    expect(notifications[0].message).toContain('kredensial object storage');
+  });
+
+  it('tidak mengirim notifikasi jika tidak ada QA Engineer di proyek', async () => {
+    // Hapus semua QA Engineer dari proyek
+    await removeQAEngineers(projectId);
+
+    await evaluateCleanupHealth({ projectId, filesFailed: 1 });
+
+    const notifications = await getNotifications(projectId);
+    expect(notifications).toHaveLength(0);
+  });
+});
+```
+
+---
+
+## Ringkasan
+
+| Aspek | Implementasi |
+|---|---|
+| **Threshold** | 1 kegagalan → WARNING, 3 berturut-turut → CRITICAL |
+| **De-duplikasi** | Hanya kirim saat alert level naik, reset saat tidak ada kegagalan |
+| **Channel** | In-app notification (bisa ditambahkan email/webhook nanti) |
+| **Target** | Semua QA Engineer di proyek |
+| **Isolasi** | Notifikasi per proyek, ketat |
+| **Error handling** | Gagal kirim notifikasi tidak block cleanup |
+| **Test coverage** | Threshold, de-duplikasi, reset, escalation, edge cases |
+
+Implementasi ini memastikan QA Engineer mendapat peringatan proaktif tanpa spam, dan dapat segera mengambil tindakan sebelum masalah storage membesar.
