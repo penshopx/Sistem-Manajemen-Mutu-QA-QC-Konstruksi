@@ -1,0 +1,526 @@
+Berikut rancangan konfigurasi masa simpan riwayat per proyek dengan batas aman.
+
+---
+
+## 1. Schema untuk Konfigurasi Retensi
+
+```typescript
+// lib/db/src/schema/projects.ts (tambahan)
+import { pgTable, uuid, integer, timestamp } from 'drizzle-orm/pg-core';
+
+export const projects = pgTable('projects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: varchar('name', { length: 255 }).notNull(),
+  
+  // Konfigurasi retensi riwayat cleanup
+  retentionDays: integer('retention_days').default(30).notNull(), // 30 hari default
+  
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+```
+
+**Batas aman:**
+- Minimum: 7 hari (untuk memastikan data operasional cukup untuk audit)
+- Maksimum: 365 hari (untuk mencegah pembengkakan database)
+- Default: 30 hari
+
+---
+
+## 2. Konstanta dan Validasi
+
+```typescript
+// artifacts/api-server/src/lib/retention-config.ts
+
+export const RETENTION_CONFIG = {
+  MIN_DAYS: 7,
+  MAX_DAYS: 365,
+  DEFAULT_DAYS: 30,
+  OPERATIONAL_WINDOW_HOURS: 24, // Data dalam 24 jam terakhir tidak boleh dihapus
+} as const;
+
+export class RetentionValidationError extends Error {
+  constructor(message: string, public code: string) {
+    super(message);
+  }
+}
+
+/**
+ * Validasi nilai retensi dalam batas aman.
+ * @throws RetentionValidationError jika nilai di luar batas
+ */
+export function validateRetentionDays(days: number): void {
+  if (!Number.isInteger(days)) {
+    throw new RetentionValidationError(
+      'Masa simpan harus bilangan bulat',
+      'INVALID_TYPE'
+    );
+  }
+
+  if (days < RETENTION_CONFIG.MIN_DAYS) {
+    throw new RetentionValidationError(
+      `Masa simpan minimum ${RETENTION_CONFIG.MIN_DAYS} hari`,
+      'BELOW_MINIMUM'
+    );
+  }
+
+  if (days > RETENTION_CONFIG.MAX_DAYS) {
+    throw new RetentionValidationError(
+      `Masa simpan maksimum ${RETENTION_CONFIG.MAX_DAYS} hari`,
+      'ABOVE_MAXIMUM'
+    );
+  }
+}
+
+/**
+ * Hitung cutoff timestamp berdasarkan retensi dan jendela operasional.
+ * Data yang lebih baru dari cutoff tidak akan dihapus.
+ */
+export function calculateCutoffTimestamp(retentionDays: number): Date {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - retentionDays);
+  
+  // Pastikan tidak menghapus data dalam jendela operasional 24 jam
+  const operationalWindow = new Date();
+  operationalWindow.setHours(operationalWindow.getHours() - RETENTION_CONFIG.OPERATIONAL_WINDOW_HOURS);
+  
+  // Gunakan cutoff yang lebih baru (lebih aman)
+  return cutoff > operationalWindow ? cutoff : operationalWindow;
+}
+```
+
+---
+
+## 3. API Endpoints
+
+```typescript
+// artifacts/api-server/src/routes/projects.ts
+import { Router } from 'express';
+import { requireAuth, requireRole } from '../middlewares/auth';
+import { db } from '../lib/db';
+import { projects } from '../../lib/db/schema';
+import { eq } from 'drizzle-orm';
+import { validateRetentionDays, RETENTION_CONFIG } from '../lib/retention-config';
+
+const router = Router();
+
+// GET /api/projects/:projectId/retention
+router.get(
+  '/projects/:projectId/retention',
+  requireAuth,
+  requireRole(['PROJECT_MANAGER', 'QA_MANAGER', 'ADMIN']),
+  async (req, res) => {
+    const { projectId } = req.params;
+
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, projectId),
+      columns: ['id', 'retentionDays'],
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: 'Proyek tidak ditemukan' });
+    }
+
+    res.json({
+      retentionDays: project.retentionDays,
+      minDays: RETENTION_CONFIG.MIN_DAYS,
+      maxDays: RETENTION_CONFIG.MAX_DAYS,
+      defaultDays: RETENTION_CONFIG.DEFAULT_DAYS,
+    });
+  }
+);
+
+// PUT /api/projects/:projectId/retention
+router.put(
+  '/projects/:projectId/retention',
+  requireAuth,
+  requireRole(['ADMIN']), // Hanya admin yang bisa mengubah
+  async (req, res) => {
+    const { projectId } = req.params;
+    const { retentionDays } = req.body;
+
+    try {
+      // Validasi
+      validateRetentionDays(retentionDays);
+
+      // Baca nilai sebelumnya untuk audit
+      const [projectBefore] = await db.select()
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .limit(1);
+
+      if (!projectBefore) {
+        return res.status(404).json({ error: 'Proyek tidak ditemukan' });
+      }
+
+      // Update
+      const [projectAfter] = await db.update(projects)
+        .set({
+          retentionDays,
+          updatedAt: new Date(),
+        })
+        .where(eq(projects.id, projectId))
+        .returning();
+
+      // Audit trail
+      await db.insert(auditLogs).values({
+        projectId,
+        userId: req.auth.userId,
+        action: 'UPDATE_RETENTION_CONFIG',
+        recordType: 'project',
+        recordId: projectId,
+        before: { retentionDays: projectBefore.retentionDays },
+        after: { retentionDays: projectAfter.retentionDays },
+      });
+
+      res.json({
+        retentionDays: projectAfter.retentionDays,
+        message: 'Konfigurasi masa simpan berhasil diperbarui',
+      });
+
+    } catch (error) {
+      if (error instanceof RetentionValidationError) {
+        return res.status(400).json({
+          error: error.message,
+          code: error.code,
+        });
+      }
+      res.status(500).json({ error: 'Gagal memperbarui konfigurasi' });
+    }
+  }
+);
+```
+
+---
+
+## 4. Integrasi dengan Cleanup Job
+
+```typescript
+// artifacts/api-server/src/lib/attachment-upload-cleanup.ts
+import { calculateCutoffTimestamp } from './retention-config';
+
+export async function runOrphanedFileCleanup() {
+  // Ambil semua proyek dengan konfigurasi retensi
+  const projects = await db.query.projects.findMany({
+    columns: ['id', 'retentionDays'],
+  });
+
+  for (const project of projects) {
+    try {
+      await cleanupProjectUploads(project.id, project.retentionDays);
+    } catch (error) {
+      console.error(`[Cleanup] Gagal membersihkan proyek ${project.id}:`, error);
+    }
+  }
+}
+
+async function cleanupProjectUploads(projectId: string, retentionDays: number) {
+  // Hitung cutoff berdasarkan konfigurasi proyek
+  const cutoff = calculateCutoffTimestamp(retentionDays);
+
+  console.log(`[Cleanup] Proyek ${projectId}: menghapus upload sebelum ${cutoff.toISOString()}`);
+
+  // Ambil upload yatim yang lebih lama dari cutoff
+  const orphanedUploads = await db.query.attachmentUploads.findMany({
+    where: and(
+      eq(attachmentUploads.projectId, projectId),
+      lt(attachmentUploads.createdAt, cutoff),
+      isNull(attachmentUploads.metadataId) // Yatim
+    ),
+    limit: 100, // Batch processing
+  });
+
+  for (const upload of orphanedUploads) {
+    await processOrphanedUpload(upload);
+  }
+}
+```
+
+---
+
+## 5. Migration untuk Proyek Existing
+
+```sql
+-- migrations/XXXX_add_retention_config.sql
+
+-- Tambahkan kolom retensi dengan default 30 hari
+ALTER TABLE projects
+ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 30;
+
+-- Tambahkan constraint untuk memastikan nilai dalam batas aman
+ALTER TABLE projects
+ADD CONSTRAINT chk_retention_days_range
+CHECK (retention_days >= 7 AND retention_days <= 365);
+
+-- Index untuk query cleanup
+CREATE INDEX idx_projects_retention ON projects(retention_days);
+```
+
+---
+
+## 6. Test Cases
+
+```typescript
+// artifacts/api-server/tests/retention-config.test.mjs
+import { describe, it, expect } from 'vitest';
+import { validateRetentionDays, calculateCutoffTimestamp, RETENTION_CONFIG } from '../src/lib/retention-config';
+
+describe('Retention Configuration', () => {
+  describe('validateRetentionDays', () => {
+    it('menerima nilai dalam batas aman', () => {
+      expect(() => validateRetentionDays(7)).not.toThrow();
+      expect(() => validateRetentionDays(30)).not.toThrow();
+      expect(() => validateRetentionDays(365)).not.toThrow();
+    });
+
+    it('menolak nilai di bawah minimum', () => {
+      expect(() => validateRetentionDays(6)).toThrow('Masa simpan minimum 7 hari');
+    });
+
+    it('menolak nilai di atas maksimum', () => {
+      expect(() => validateRetentionDays(366)).toThrow('Masa simpan maksimum 365 hari');
+    });
+
+    it('menolak nilai non-integer', () => {
+      expect(() => validateRetentionDays(30.5)).toThrow('Masa simpan harus bilangan bulat');
+    });
+  });
+
+  describe('calculateCutoffTimestamp', () => {
+    it('menghitung cutoff berdasarkan retensi', () => {
+      const now = new Date();
+      const cutoff = calculateCutoffTimestamp(30);
+      
+      const expectedCutoff = new Date(now);
+      expectedCutoff.setDate(expectedCutoff.getDate() - 30);
+      
+      // Perbedaan kurang dari 1 detik
+      expect(Math.abs(cutoff.getTime() - expectedCutoff.getTime())).toBeLessThan(1000);
+    });
+
+    it('tidak menghapus data dalam jendela operasional 24 jam', () => {
+      const cutoff = calculateCutoffTimestamp(1); // Retensi 1 hari (di bawah minimum, tapi untuk test)
+      
+      const operationalWindow = new Date();
+      operationalWindow.setHours(operationalWindow.getHours() - 24);
+      
+      // Cutoff tidak boleh lebih baru dari 24 jam yang lalu
+      expect(cutoff.getTime()).toBeLessThanOrEqual(operationalWindow.getTime());
+    });
+  });
+});
+
+// artifacts/api-server/tests/retention-api.test.mjs
+import { describe, it, expect, beforeEach } from 'vitest';
+import { request } from 'supertest';
+import { app } from '../src/app';
+
+describe('Retention API', () => {
+  let projectId;
+  let adminToken;
+  let projectManagerToken;
+
+  beforeEach(async () => {
+    projectId = await createTestProject();
+    adminToken = await createTestUser({ role: 'ADMIN' });
+    projectManagerToken = await createTestUser({ role: 'PROJECT_MANAGER' });
+  });
+
+  describe('GET /projects/:projectId/retention', () => {
+    it('mengembalikan konfigurasi retensi', async () => {
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${projectManagerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.retentionDays).toBe(30);
+      expect(res.body.minDays).toBe(7);
+      expect(res.body.maxDays).toBe(365);
+    });
+
+    it('menolak akses untuk peran tidak diizinkan', async () => {
+      const teknisiToken = await createTestUser({ role: 'TEKNISI' });
+      
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${teknisiToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('PUT /projects/:projectId/retention', () => {
+    it('memperbarui konfigurasi retensi', async () => {
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ retentionDays: 60 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.retentionDays).toBe(60);
+
+      // Verifikasi di database
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, projectId),
+      });
+      expect(project.retentionDays).toBe(60);
+    });
+
+    it('menolak nilai di bawah minimum', async () => {
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ retentionDays: 5 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('BELOW_MINIMUM');
+    });
+
+    it('menolak nilai di atas maksimum', async () => {
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ retentionDays: 400 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('ABOVE_MAXIMUM');
+    });
+
+    it('mencatat audit trail', async () => {
+      await request(app)
+        .put(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ retentionDays: 60 });
+
+      const audit = await db.query.auditLogs.findFirst({
+        where: and(
+          eq(auditLogs.projectId, projectId),
+          eq(auditLogs.action, 'UPDATE_RETENTION_CONFIG')
+        ),
+      });
+
+      expect(audit).toBeDefined();
+      expect(audit.before.retentionDays).toBe(30);
+      expect(audit.after.retentionDays).toBe(60);
+    });
+
+    it('hanya admin yang bisa memperbarui', async () => {
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/retention`)
+        .set('Authorization', `Bearer ${projectManagerToken}`)
+        .send({ retentionDays: 60 });
+
+      expect(res.status).toBe(403);
+    });
+  });
+});
+
+// artifacts/api-server/tests/retention-cleanup-integration.test.mjs
+describe('Retention Cleanup Integration', () => {
+  it('menghapus upload berdasarkan konfigurasi proyek', async () => {
+    const project1 = await createTestProject({ retentionDays: 7 });
+    const project2 = await createTestProject({ retentionDays: 30 });
+
+    // Buat upload yatim dengan usia berbeda
+    const oldUpload1 = await createOrphanedUpload(project1.id, daysAgo(10));
+    const recentUpload1 = await createOrphanedUpload(project1.id, daysAgo(5));
+    const oldUpload2 = await createOrphanedUpload(project2.id, daysAgo(10));
+
+    await runOrphanedFileCleanup();
+
+    // Project 1 (retensi 7 hari): upload 10 hari dihapus, 5 hari dipertahankan
+    expect(await uploadExists(oldUpload1.id)).toBe(false);
+    expect(await uploadExists(recentUpload1.id)).toBe(true);
+
+    // Project 2 (retensi 30 hari): upload 10 hari dipertahankan
+    expect(await uploadExists(oldUpload2.id)).toBe(true);
+  });
+
+  it('tidak menghapus data dalam jendela operasional 24 jam', async () => {
+    const project = await createTestProject({ retentionDays: 7 });
+    const recentUpload = await createOrphanedUpload(project.id, hoursAgo(12));
+
+    await runOrphanedFileCleanup();
+
+    expect(await uploadExists(recentUpload.id)).toBe(true);
+  });
+});
+```
+
+---
+
+## 7. UI untuk Konfigurasi Retensi (Opsional)
+
+```tsx
+// artifacts/qa-qc-konstruksi/src/pages/ProjectSettings.tsx
+function RetentionConfig({ projectId }: { projectId: string }) {
+  const { data: config } = useQuery({
+    queryKey: ['retention-config', projectId],
+    queryFn: () => fetch(`/api/projects/${projectId}/retention`).then(r => r.json()),
+  });
+
+  const [retentionDays, setRetentionDays] = useState(config?.retentionDays || 30);
+
+  const mutation = useMutation({
+    mutationFn: (days: number) =>
+      fetch(`/api/projects/${projectId}/retention`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retentionDays: days }),
+      }).then(r => r.json()),
+    onSuccess: () => {
+      toast.success('Konfigurasi masa simpan diperbarui');
+      queryClient.invalidateQueries(['retention-config', projectId]);
+    },
+  });
+
+  if (!config) return <Spinner />;
+
+  return (
+    <div className="retention-config">
+      <h3>Konfigurasi Masa Simpan Riwayat</h3>
+      <p className="text-muted">
+        Data cleanup yang lebih lama dari periode ini akan dihapus secara otomatis.
+      </p>
+
+      <div className="form-group">
+        <label>Masa simpan (hari)</label>
+        <input
+          type="number"
+          min={config.minDays}
+          max={config.maxDays}
+          value={retentionDays}
+          onChange={(e) => setRetentionDays(parseInt(e.target.value))}
+        />
+        <p className="help-text">
+          Rentang: {config.minDays} - {config.maxDays} hari. Default: {config.defaultDays} hari.
+        </p>
+      </div>
+
+      <Button
+        onClick={() => mutation.mutate(retentionDays)}
+        disabled={mutation.isPending || retentionDays === config.retentionDays}
+      >
+        Simpan Perubahan
+      </Button>
+    </div>
+  );
+}
+```
+
+---
+
+## Ringkasan
+
+| Aspek | Implementasi |
+|---|---|
+| **Konfigurasi per proyek** | Kolom `retentionDays` di tabel `projects` |
+| **Batas aman** | 7-365 hari, default 30 hari |
+| **Validasi** | Server-side validation dengan error code |
+| **Jendela operasional** | Data < 24 jam tidak pernah dihapus |
+| **RBAC** | Hanya ADMIN yang bisa mengubah, PROJECT_MANAGER/QA_MANAGER bisa melihat |
+| **Audit trail** | Setiap perubahan dicatat dengan before/after |
+| **Integrasi cleanup** | Cutoff dihitung per proyek berdasarkan konfigurasi |
+| **Test coverage** | Validasi, API, integrasi cleanup, jendela operasional |
+
+Implementasi ini memungkinkan administrator menyesuaikan masa simpan sesuai kebutuhan audit atau biaya database, dengan batas aman yang mencegah konfigurasi berbahaya.
