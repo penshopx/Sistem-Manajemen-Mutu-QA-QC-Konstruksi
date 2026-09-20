@@ -336,6 +336,7 @@ export const ListMaterialBatchesResponse = zod.array(ListMaterialBatchesResponse
 
 
 
+
 export const CreateMaterialBatchBody = zod.object({
   "materialTypeId": zod.string().uuid(),
   "batchNumber": zod.string().min(1),
@@ -344,7 +345,7 @@ export const CreateMaterialBatchBody = zod.object({
   "quantity": zod.number().int().min(1),
   "unit": zod.string().min(1),
   "certificateReference": zod.string().optional(),
-  "inspectionId": zod.string().optional(),
+  "inspectionId": zod.string().min(1).optional(),
   "inspectionStatus": zod.enum(['pending', 'approved', 'rejected']).optional()
 })
 
@@ -447,6 +448,12 @@ export const GetMaterialBatchTraceResponse = zod.object({
   "receivedBy": zod.string().uuid(),
   "createdAt": zod.coerce.date()
 }),
+  "activeInspection": zod.union([zod.object({
+  "id": zod.string(),
+  "reference": zod.string(),
+  "type": zod.enum(['MIR']),
+  "status": zod.string()
+}),zod.null()]).optional(),
   "inventory": zod.array(zod.object({
   "id": zod.string().uuid(),
   "projectId": zod.string().uuid(),

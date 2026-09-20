@@ -19,6 +19,7 @@ export interface MaterialBatchInput {
   /** @minLength 1 */
   unit: string;
   certificateReference?: string;
+  /** @minLength 1 */
   inspectionId?: string;
   inspectionStatus?: MaterialBatchInputInspectionStatus;
 }

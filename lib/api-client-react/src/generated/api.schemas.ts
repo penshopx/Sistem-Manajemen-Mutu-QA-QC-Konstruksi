@@ -266,6 +266,7 @@ export interface MaterialBatchInput {
   /** @minLength 1 */
   unit: string;
   certificateReference?: string;
+  /** @minLength 1 */
   inspectionId?: string;
   inspectionStatus?: MaterialBatchInputInspectionStatus;
 }
@@ -314,8 +315,23 @@ export interface MaterialUsageInput {
   notes?: string;
 }
 
+export type MaterialInspectionReferenceType = typeof MaterialInspectionReferenceType[keyof typeof MaterialInspectionReferenceType];
+
+
+export const MaterialInspectionReferenceType = {
+  MIR: 'MIR',
+} as const;
+
+export interface MaterialInspectionReference {
+  id: string;
+  reference: string;
+  type: MaterialInspectionReferenceType;
+  status: string;
+}
+
 export interface MaterialTrace {
   batch: MaterialBatch;
+  activeInspection?: MaterialInspectionReference | null;
   inventory: MaterialInventory[];
   usage: MaterialUsage[];
 }

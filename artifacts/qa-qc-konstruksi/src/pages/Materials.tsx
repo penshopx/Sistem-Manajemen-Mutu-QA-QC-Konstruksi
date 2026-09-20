@@ -29,8 +29,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, MapPin, Box, Plus, History, AlertTriangle, ShieldCheck, Database, Layers } from "lucide-react";
 import { format } from "date-fns";
+import { useStore, type Inspection } from "@/lib/store";
 
 export function MaterialsPage() {
+  const { state } = useStore();
   const [activeTab, setActiveTab] = useState("batches");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
@@ -315,6 +317,16 @@ export function MaterialsPage() {
                         <span className="text-muted-foreground block text-xs uppercase font-mono">Penerima</span>
                         <span className="font-medium">{traceData.batch.receivedBy || '-'}</span>
                       </div>
+                      <div>
+                        <span className="text-muted-foreground block text-xs uppercase font-mono">MIR Aktif</span>
+                        {traceData.activeInspection ? (
+                          <span className="font-mono font-semibold text-primary">
+                            {traceData.activeInspection.reference}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">Belum ditautkan</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </CardContent>
@@ -482,6 +494,7 @@ export function MaterialsPage() {
         isOpen={isCreateBatchModalOpen} 
         onClose={() => setIsCreateBatchModalOpen(false)} 
         types={types}
+        inspections={state.inspections}
       />
       <InventoryModal 
         isOpen={isInventoryModalOpen} 
@@ -607,7 +620,12 @@ function CreateLocationModal({ isOpen, onClose }: { isOpen: boolean, onClose: ()
   );
 }
 
-function CreateBatchModal({ isOpen, onClose, types }: { isOpen: boolean, onClose: () => void, types: any[] }) {
+function CreateBatchModal({ isOpen, onClose, types, inspections }: {
+  isOpen: boolean;
+  onClose: () => void;
+  types: any[];
+  inspections: Inspection[];
+}) {
   const queryClient = useQueryClient();
   const createBatch = useCreateMaterialBatch();
   
@@ -617,11 +635,12 @@ function CreateBatchModal({ isOpen, onClose, types }: { isOpen: boolean, onClose
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [qty, setQty] = useState("");
   const [status, setStatus] = useState<"pending"|"approved"|"rejected">("pending");
+  const [inspectionId, setInspectionId] = useState("");
 
   const resetForm = () => {
     setTypeId(""); setBatchNum(""); setSupplier("");
     setDate(new Date().toISOString().split('T')[0]);
-    setQty(""); setStatus("pending");
+    setQty(""); setStatus("pending"); setInspectionId("");
   };
 
   const selectedType = types.find(t => t.id === typeId);
@@ -637,6 +656,7 @@ function CreateBatchModal({ isOpen, onClose, types }: { isOpen: boolean, onClose
           deliveryDate: new Date(date).toISOString(),
           quantity: Number(qty),
           unit: selectedType.unit, // inherit unit from master
+          inspectionId: inspectionId || undefined,
           inspectionStatus: status
         } 
       },
@@ -688,15 +708,34 @@ function CreateBatchModal({ isOpen, onClose, types }: { isOpen: boolean, onClose
             <Input type="number" value={qty} onChange={e => setQty(e.target.value)} placeholder="0" />
           </div>
           <div className="col-span-2">
+            <label className="text-xs font-mono text-muted-foreground uppercase mb-1 block">MIR Material (Opsional)</label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              value={inspectionId}
+              onChange={e => setInspectionId(e.target.value)}
+            >
+              <option value="">Belum ditautkan</option>
+              {inspections.filter(inspection => inspection.type === "MIR").map(inspection => (
+                <option key={inspection.id} value={inspection.id} className="bg-background">
+                  {inspection.reference} — {inspection.status}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="col-span-2">
             <label className="text-xs font-mono text-muted-foreground uppercase mb-1 block">Status QA Awal</label>
             <select 
               className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              value={status} onChange={e => setStatus(e.target.value as any)}
+              value={status} onChange={e => setStatus(e.target.value as "pending" | "approved" | "rejected")}
+              disabled={Boolean(inspectionId)}
             >
               <option value="pending" className="bg-background text-foreground">PENDING (Menunggu Inspeksi)</option>
               <option value="approved" className="bg-background text-green-500">APPROVED (Diterima)</option>
               <option value="rejected" className="bg-background text-destructive">REJECTED (Ditolak)</option>
             </select>
+            {inspectionId && (
+              <p className="mt-1 text-xs text-muted-foreground">Status mengikuti hasil MIR yang dipilih dan akan tersinkron otomatis.</p>
+            )}
           </div>
         </div>
         <div className="pt-4 flex justify-end gap-2">

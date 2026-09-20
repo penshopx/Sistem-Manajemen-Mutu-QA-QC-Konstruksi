@@ -17,6 +17,8 @@ export * from './healthStatus';
 export * from './materialBatch';
 export * from './materialBatchInput';
 export * from './materialBatchInputInspectionStatus';
+export * from './materialInspectionReference';
+export * from './materialInspectionReferenceType';
 export * from './materialInventory';
 export * from './materialInventoryInput';
 export * from './materialLocation';

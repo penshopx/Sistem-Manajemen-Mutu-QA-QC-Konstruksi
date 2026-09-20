@@ -6,11 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { MaterialBatch } from './materialBatch';
+import type { MaterialInspectionReference } from './materialInspectionReference';
 import type { MaterialInventory } from './materialInventory';
 import type { MaterialUsage } from './materialUsage';
 
 export interface MaterialTrace {
   batch: MaterialBatch;
+  activeInspection?: MaterialInspectionReference | null;
   inventory: MaterialInventory[];
   usage: MaterialUsage[];
 }

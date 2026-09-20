@@ -30,6 +30,7 @@ const projectId = "11111111-1111-4111-8111-111111111111";
 const typeId = "22222222-2222-4222-8222-222222222222";
 const batchId = "33333333-3333-4333-8333-333333333333";
 const locationId = "44444444-4444-4444-8444-444444444444";
+const inspectionId = "mir-001";
 const validBatch = {
   materialTypeId: typeId, batchNumber: "BATCH-001", supplier: "PT Baja",
   deliveryDate: "2025-01-01T00:00:00.000Z", quantity: 100, unit: "ton",
@@ -37,6 +38,7 @@ const validBatch = {
 assert.deepEqual(CreateMaterialTypeBody.parse({ name: "Baja D13", category: "Struktur", unit: "ton" }).name, "Baja D13");
 assert.deepEqual(CreateMaterialLocationBody.parse({ name: "Gudang A" }).name, "Gudang A");
 assert.equal(CreateMaterialBatchBody.parse(validBatch).quantity, 100);
+assert.equal(CreateMaterialBatchBody.parse({ ...validBatch, inspectionId }).inspectionId, inspectionId);
 assert.equal(PlaceMaterialInventoryBody.parse({ batchId, storageLocationId: locationId, quantity: 100 }).quantity, 100);
 assert.equal(RecordMaterialUsageBody.parse({
   batchId, location: "Lantai 3, Kolom C-5", quantity: 10, installedDate: validBatch.deliveryDate,
@@ -52,6 +54,7 @@ for (const operationId of [
   "listMaterialBatches", "createMaterialBatch", "placeMaterialInventory", "recordMaterialUsage",
   "getMaterialBatchTrace", "getMaterialBatchRecall",
 ]) assert.match(specSource, new RegExp(`operationId: ${operationId}`));
+assert.match(specSource, /activeInspection:/);
 
 // Every lookup and mutation must carry the current project. This catches regressions
 // where a convenient ID-only lookup accidentally becomes cross-project.
@@ -63,6 +66,10 @@ for (const table of [
 }
 assert.match(routeSource, /eq\(materialBatchesTable\.id, batchId\), eq\(materialBatchesTable\.projectId, a\.project\.id\)/);
 assert.match(routeSource, /eq\(materialInventoryTable\.projectId, a\.project\.id\)/);
+assert.match(routeSource, /eq\(qaqcRecordsTable\.projectId, a\.project\.id\)/);
+assert.match(routeSource, /inspection\.data\.type !== "MIR"/);
+assert.match(routeSource, /recordType: body\.data\.inspectionId \? "inspections" : null/);
+assert.match(routeSource, /recordId: body\.data\.inspectionId \?\? null/);
 
 // Usage must lock stock before checking it, and the insufficient branch must precede
 // both usage and audit inserts.

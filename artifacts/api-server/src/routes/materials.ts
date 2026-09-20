@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   auditEventsTable, materialBatchesTable, materialInventoryTable,
-  materialStorageLocationsTable, materialTypesTable, materialUsageTable,
+  materialStorageLocationsTable, materialTypesTable, materialUsageTable, qaqcRecordsTable,
 } from "@workspace/db";
 import {
   CreateMaterialBatchBody, CreateMaterialBatchResponse, CreateMaterialLocationBody,
@@ -38,6 +38,12 @@ function access(res: Parameters<Parameters<IRouter["get"]>[1]>[1]) {
 function writable(res: Parameters<Parameters<IRouter["get"]>[1]>[1]) {
   const a = access(res);
   return canMutate(a.membership.role, "materials", "create");
+}
+
+function materialInspectionStatus(data: Record<string, unknown>) {
+  if (data.status === "Passed") return "approved";
+  if (data.status === "Failed") return "rejected";
+  return "pending";
 }
 
 router.get("/materials/types", async (_req, res): Promise<void> => {
@@ -86,14 +92,46 @@ router.post("/materials/batches", async (req, res): Promise<void> => {
   if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
   if (!writable(res)) { res.status(403).json({ error: "Peran Anda tidak memiliki izin mengelola material." }); return; }
   const a = access(res);
-  const [type] = await db.select({ id: materialTypesTable.id }).from(materialTypesTable).where(and(eq(materialTypesTable.id, body.data.materialTypeId), eq(materialTypesTable.projectId, a.project.id)));
-  if (!type) { res.status(404).json({ error: "Jenis material tidak ditemukan." }); return; }
-  const row = await db.transaction(async (tx) => {
-    const [created] = await tx.insert(materialBatchesTable).values({ ...body.data, projectId: a.project.id, receivedBy: a.user.id }).returning();
-    await tx.insert(auditEventsTable).values({ projectId: a.project.id, actorUserId: a.user.id, action: "Created material batch", subject: created.batchNumber, after: created });
-    return created;
+  const result = await db.transaction(async (tx) => {
+    const [type] = await tx.select({ id: materialTypesTable.id }).from(materialTypesTable).where(and(
+      eq(materialTypesTable.id, body.data.materialTypeId),
+      eq(materialTypesTable.projectId, a.project.id),
+    ));
+    if (!type) return { kind: "missing-type" as const };
+
+    let inspectionStatus = body.data.inspectionStatus ?? "pending";
+    let inspectionReference: string | null = null;
+    if (body.data.inspectionId) {
+      const [inspection] = await tx.select().from(qaqcRecordsTable).where(and(
+        eq(qaqcRecordsTable.id, body.data.inspectionId),
+        eq(qaqcRecordsTable.projectId, a.project.id),
+        eq(qaqcRecordsTable.type, "inspections"),
+      )).limit(1);
+      if (!inspection || inspection.data.type !== "MIR") return { kind: "missing-inspection" as const };
+      inspectionStatus = materialInspectionStatus(inspection.data);
+      inspectionReference = typeof inspection.data.reference === "string" ? inspection.data.reference : inspection.id;
+    }
+
+    const [created] = await tx.insert(materialBatchesTable).values({
+      ...body.data,
+      inspectionStatus,
+      projectId: a.project.id,
+      receivedBy: a.user.id,
+    }).returning();
+    await tx.insert(auditEventsTable).values({
+      projectId: a.project.id,
+      actorUserId: a.user.id,
+      recordType: body.data.inspectionId ? "inspections" : null,
+      recordId: body.data.inspectionId ?? null,
+      action: "Created material batch",
+      subject: created.batchNumber,
+      after: { ...created, inspectionReference },
+    });
+    return { kind: "ok" as const, row: created };
   });
-  res.status(201).json(CreateMaterialBatchResponse.parse(row));
+  if (result.kind === "missing-type") { res.status(404).json({ error: "Jenis material tidak ditemukan." }); return; }
+  if (result.kind === "missing-inspection") { res.status(404).json({ error: "MIR material tidak ditemukan dalam proyek ini." }); return; }
+  res.status(201).json(CreateMaterialBatchResponse.parse(result.row));
 });
 
 router.post("/materials/inventory", async (req, res): Promise<void> => {
@@ -141,7 +179,23 @@ async function batchTrace(batchId: string, a: ProjectAccess) {
   if (!batch) return null;
   const inventory = await db.select().from(materialInventoryTable).where(and(eq(materialInventoryTable.batchId, batchId), eq(materialInventoryTable.projectId, a.project.id)));
   const usage = await db.select().from(materialUsageTable).where(and(eq(materialUsageTable.batchId, batchId), eq(materialUsageTable.projectId, a.project.id)));
-  return { batch, inventory, usage };
+  let activeInspection = null;
+  if (batch.inspectionId) {
+    const [inspection] = await db.select().from(qaqcRecordsTable).where(and(
+      eq(qaqcRecordsTable.id, batch.inspectionId),
+      eq(qaqcRecordsTable.projectId, a.project.id),
+      eq(qaqcRecordsTable.type, "inspections"),
+    )).limit(1);
+    if (inspection && inspection.data.type === "MIR") {
+      activeInspection = {
+        id: inspection.id,
+        reference: typeof inspection.data.reference === "string" ? inspection.data.reference : inspection.id,
+        type: "MIR" as const,
+        status: typeof inspection.data.status === "string" ? inspection.data.status : "Pending",
+      };
+    }
+  }
+  return { batch, activeInspection, inventory, usage };
 }
 router.get("/materials/batches/:batchId/trace", async (req, res): Promise<void> => {
   const params = GetMaterialBatchTraceParams.safeParse(req.params);

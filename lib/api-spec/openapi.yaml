@@ -554,7 +554,7 @@ components:
         quantity: { type: integer, minimum: 1 }
         unit: { type: string, minLength: 1 }
         certificateReference: { type: string }
-        inspectionId: { type: string }
+        inspectionId: { type: string, minLength: 1 }
         inspectionStatus: { type: string, enum: [pending, approved, rejected] }
     MaterialInventory:
       type: object
@@ -602,8 +602,20 @@ components:
       required: [batch, inventory, usage]
       properties:
         batch: { $ref: "#/components/schemas/MaterialBatch" }
+        activeInspection:
+          oneOf:
+            - $ref: "#/components/schemas/MaterialInspectionReference"
+            - type: "null"
         inventory: { type: array, items: { $ref: "#/components/schemas/MaterialInventory" } }
         usage: { type: array, items: { $ref: "#/components/schemas/MaterialUsage" } }
+    MaterialInspectionReference:
+      type: object
+      required: [id, reference, type, status]
+      properties:
+        id: { type: string }
+        reference: { type: string }
+        type: { type: string, enum: [MIR] }
+        status: { type: string }
     MaterialRecall:
       type: object
       required: [batchId, totalAffectedLocations, locations]

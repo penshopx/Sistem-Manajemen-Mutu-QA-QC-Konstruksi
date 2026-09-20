@@ -4,6 +4,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   attachmentUploadsTable,
   auditEventsTable,
+  materialBatchesTable,
   projectInvitationsTable,
   projectMembershipsTable,
   qaqcRecordsTable,
@@ -61,6 +62,12 @@ import { tenantDatabase as db, withProjectContext } from "../lib/tenant-database
 const router: IRouter = Router();
 const pendingPreviewJobs: Array<() => Promise<void>> = [];
 let previewJobActive = false;
+
+function materialInspectionStatus(data: Record<string, unknown>) {
+  if (data.status === "Passed") return "approved";
+  if (data.status === "Failed") return "rejected";
+  return "pending";
+}
 
 function attachmentPreviewUrl(
   attachment: Pick<typeof recordAttachmentsTable.$inferSelect, "id" | "recordId" | "recordType" | "previewStatus">,
@@ -604,7 +611,7 @@ router.patch("/workspace/:collection/:id", async (req, res): Promise<void> => {
     if (!existing) return null;
     const data = { ...existing.data, ...body.data };
     delete data.id;
-    return executeAuditedMutation(
+    const updated = await executeAuditedMutation(
       tx,
       async (transaction) => {
         const [updated] = await transaction.update(qaqcRecordsTable).set({
@@ -622,6 +629,38 @@ router.patch("/workspace/:collection/:id", async (req, res): Promise<void> => {
         }, existing.data, data));
       },
     );
+    if (
+      params.data.collection === "inspections"
+      && existing.data.type === "MIR"
+      && existing.data.status !== data.status
+    ) {
+      const linkedBatches = await tx.select().from(materialBatchesTable).where(and(
+        eq(materialBatchesTable.projectId, access.project.id),
+        eq(materialBatchesTable.inspectionId, existing.id),
+      )).for("update");
+      if (linkedBatches.length > 0) {
+        const inspectionStatus = materialInspectionStatus(data);
+        await tx.update(materialBatchesTable).set({ inspectionStatus }).where(and(
+          eq(materialBatchesTable.projectId, access.project.id),
+          eq(materialBatchesTable.inspectionId, existing.id),
+        ));
+        await tx.insert(auditEventsTable).values(linkedBatches.map((batch) => ({
+          projectId: access.project.id,
+          actorUserId: access.user.id,
+          recordType: "inspections" as const,
+          recordId: existing.id,
+          action: "Synchronized material batch from MIR",
+          subject: batch.batchNumber,
+          before: { inspectionId: existing.id, inspectionStatus: batch.inspectionStatus },
+          after: {
+            inspectionId: existing.id,
+            inspectionReference: typeof data.reference === "string" ? data.reference : existing.id,
+            inspectionStatus,
+          },
+        })));
+      }
+    }
+    return updated;
   });
   if (!result) {
     res.status(404).json({ error: "Record tidak ditemukan." });
