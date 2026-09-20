@@ -136,6 +136,22 @@ export const attachmentUploadsTable = pgTable(
   ],
 );
 
+export const attachmentCleanupEventsTable = pgTable(
+  "qaqc_attachment_cleanup_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id").notNull().references(() => projectsTable.id, { onDelete: "cascade" }),
+    uploadId: uuid("upload_id").notNull(),
+    outcome: text("outcome").notNull(),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("qaqc_attachment_cleanup_events_project_created_idx").on(table.projectId, table.createdAt),
+    index("qaqc_attachment_cleanup_events_upload_created_idx").on(table.uploadId, table.createdAt),
+  ],
+);
+
 export const auditEventsTable = pgTable(
   "audit_events",
   {

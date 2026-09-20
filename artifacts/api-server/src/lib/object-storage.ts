@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Storage, type File } from "@google-cloud/storage";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
 import {
+  attachmentCleanupEventsTable,
   attachmentUploadsTable,
   db,
   recordAttachmentsTable,
@@ -90,6 +91,7 @@ export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
       return db.select({
         id: attachmentUploadsTable.id,
         objectPath: attachmentUploadsTable.objectPath,
+        projectId: attachmentUploadsTable.projectId,
       }).from(attachmentUploadsTable).where(and(
         or(
           isNull(attachmentUploadsTable.cleanupStartedAt),
@@ -128,6 +130,17 @@ export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
       await db.update(attachmentUploadsTable)
         .set({ cleanupStartedAt: null })
         .where(eq(attachmentUploadsTable.id, id));
+    },
+    async recordOutcome(candidate, outcome, error) {
+      if (!candidate.projectId) return;
+      await db.insert(attachmentCleanupEventsTable).values({
+        projectId: candidate.projectId,
+        uploadId: candidate.id,
+        outcome,
+        errorMessage: outcome === "failed"
+          ? error instanceof Error ? error.message.slice(0, 500) : "Kegagalan storage tidak diketahui"
+          : null,
+      });
     },
     reportCleanupError(err, uploadId) {
       logger.error({ err, uploadId }, "Failed to clean orphaned attachment upload");

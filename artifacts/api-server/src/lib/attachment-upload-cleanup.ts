@@ -1,6 +1,7 @@
 const CLEANUP_CLAIM_TIMEOUT_MS = 30 * 60 * 1000;
 
-type CleanupCandidate = { id: string; objectPath: string };
+type CleanupCandidate = { id: string; objectPath: string; projectId?: string };
+export type CleanupOutcome = "deleted" | "preserved" | "failed";
 
 export type AttachmentUploadCleanupDependencies = {
   listCandidates(now: Date, staleClaimBefore: Date): Promise<CleanupCandidate[]>;
@@ -9,6 +10,7 @@ export type AttachmentUploadCleanupDependencies = {
   deleteObject(objectPath: string): Promise<void>;
   deleteTrackingRow(id: string): Promise<void>;
   releaseClaim(id: string): Promise<void>;
+  recordOutcome?(candidate: CleanupCandidate, outcome: CleanupOutcome, error?: unknown): Promise<void>;
   reportCleanupError?(error: unknown, uploadId: string): void;
   reportReleaseError?(error: unknown, uploadId: string): void;
 };
@@ -27,24 +29,30 @@ export async function runAttachmentUploadCleanup(
     try {
       if (!await dependencies.claimCandidate(candidate.id, now, staleClaimBefore)) {
         preserved += 1;
+        await dependencies.recordOutcome?.(candidate, "preserved");
         continue;
       }
 
       if (await dependencies.hasAttachment(candidate.objectPath)) {
         await dependencies.deleteTrackingRow(candidate.id);
         preserved += 1;
+        await dependencies.recordOutcome?.(candidate, "preserved");
         continue;
       }
 
       await dependencies.deleteObject(candidate.objectPath);
       await dependencies.deleteTrackingRow(candidate.id);
       deleted += 1;
+      await dependencies.recordOutcome?.(candidate, "deleted");
     } catch (error) {
       failed += 1;
       await dependencies.releaseClaim(candidate.id).catch((releaseError) => {
         dependencies.reportReleaseError?.(releaseError, candidate.id);
       });
       dependencies.reportCleanupError?.(error, candidate.id);
+      await dependencies.recordOutcome?.(candidate, "failed", error).catch((reportError) => {
+        dependencies.reportCleanupError?.(reportError, candidate.id);
+      });
     }
   }
 

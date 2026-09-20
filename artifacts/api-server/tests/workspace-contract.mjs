@@ -15,6 +15,7 @@ await writeFile(entry, `
     GetWorkspaceResponse,
   } from "${path.resolve("../../lib/api-zod/src/generated/api.ts").replaceAll("\\", "/")}";
    export { canManageAttachment, canMutate } from "${path.resolve("src/lib/rbac.ts").replaceAll("\\", "/")}";
+   export { canViewCleanupOperations, cleanupWarning } from "${path.resolve("src/lib/cleanup-operations.ts").replaceAll("\\", "/")}";
 `);
 
 await build({
@@ -30,6 +31,8 @@ const {
   GetWorkspaceResponse,
   canManageAttachment,
   canMutate,
+  canViewCleanupOperations,
+  cleanupWarning,
 } = await import(pathToFileURL(output).href);
 
 const record = {
@@ -81,5 +84,12 @@ assert.equal(canManageAttachment("QC_INSPECTOR", "inspections", "delete"), false
 assert.equal(canManageAttachment("SITE_MANAGER", "ncrs", "add"), true);
 assert.equal(canManageAttachment("PROJECT_MANAGER", "ncrs", "add"), false);
 assert.equal(canManageAttachment("PROJECT_MANAGER", "ncrs", "delete"), false);
+assert.equal(canViewCleanupOperations("QA_ENGINEER"), true);
+assert.equal(canViewCleanupOperations("PROJECT_MANAGER"), false);
+assert.equal(canViewCleanupOperations("SITE_MANAGER"), false);
+assert.equal(canViewCleanupOperations("QC_INSPECTOR"), false);
+assert.equal(cleanupWarning(0, 0), null);
+assert.equal(cleanupWarning(1, 0).level, "notice");
+assert.equal(cleanupWarning(3, 1).level, "warning");
 
 console.info("Workspace contract and RBAC checks passed.");
