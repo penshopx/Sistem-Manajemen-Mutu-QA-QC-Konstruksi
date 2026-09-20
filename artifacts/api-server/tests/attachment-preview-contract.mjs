@@ -7,6 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import jpeg from "jpeg-js";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
+const workspaceRouteSource = await readFile(
+  path.resolve("src/routes/workspace.ts"),
+  "utf8",
+);
 
 const directory = await mkdtemp(path.join(tmpdir(), "attachment-preview-"));
 const output = path.join(directory, "attachment-preview.cjs");
@@ -20,11 +24,25 @@ await build({
   external: ["@google-cloud/storage"],
 });
 
-const { createHeicPreview, needsHeicPreview } = await import(pathToFileURL(output).href);
+const {
+  createHeicPreview,
+  createHeicPreviewWithRetry,
+  needsHeicPreview,
+} = await import(pathToFileURL(output).href);
 
 assert.equal(needsHeicPreview("image/heic", "photo"), true);
 assert.equal(needsHeicPreview("application/octet-stream", "photo.HEIF"), true);
 assert.equal(needsHeicPreview("image/jpeg", "photo.jpg"), false);
+assert.match(
+  workspaceRouteSource,
+  /previewStatus !== "original"[^\n]*\n[^]*needsHeicPreview\(attachment\.contentType, attachment\.fileName\)/,
+  "legacy original HEIC attachments must be detected for background conversion",
+);
+assert.match(
+  workspaceRouteSource,
+  /previewStatus: "processing"[^]*queueHeicPreview\(/,
+  "legacy HEIC attachments must atomically transition to processing before being queued",
+);
 
 function fakeFile(bytes = Buffer.from("heic")) {
   const state = { saved: null, deleted: false };
@@ -130,6 +148,25 @@ const failed = await createHeicPreview(
 assert.equal(failed.status, "failed");
 assert.match(failed.error, /invalid HEIC/);
 assert.equal(failedPreview.state.deleted, true);
+
+let attempts = 0;
+const retried = await createHeicPreviewWithRetry(
+  source,
+  fakeFile(),
+  "/objects/uploads/retried-preview",
+  {
+    maxAttempts: 3,
+    retryDelayMs: 0,
+    wait: async () => undefined,
+    convertImage: async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("temporary failure");
+      return Buffer.from("jpeg");
+    },
+  },
+);
+assert.equal(attempts, 3);
+assert.equal(retried.status, "ready");
 
 await readFile(output);
 await rm(directory, { recursive: true, force: true });

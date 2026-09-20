@@ -450,7 +450,7 @@ components:
         previewUrl: { type: ["string", "null"] }
         previewStatus:
           type: string
-          enum: [original, ready, failed]
+          enum: [original, processing, ready, failed]
         previewError: { type: ["string", "null"] }
     StorageCleanupWarning:
       type: object

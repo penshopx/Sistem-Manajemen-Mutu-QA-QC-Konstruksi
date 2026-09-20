@@ -47,7 +47,8 @@ import {
   streamAttachment,
   streamAttachmentPreview,
 } from "../lib/object-storage";
-import { createHeicPreview, needsHeicPreview } from "../lib/attachment-preview";
+import { createHeicPreviewWithRetry, needsHeicPreview } from "../lib/attachment-preview";
+import { logger } from "../lib/logger";
 import {
   createdRecordAudit,
   deletedRecordAudit,
@@ -58,6 +59,112 @@ import { onlyProjectRows } from "../lib/project-scope";
 import { tenantDatabase as db, withProjectContext } from "../lib/tenant-database";
 
 const router: IRouter = Router();
+const pendingPreviewJobs: Array<() => Promise<void>> = [];
+let previewJobActive = false;
+
+function attachmentPreviewUrl(
+  attachment: Pick<typeof recordAttachmentsTable.$inferSelect, "id" | "recordId" | "recordType" | "previewStatus">,
+) {
+  if (attachment.previewStatus === "failed" || attachment.previewStatus === "processing") return null;
+  return `/api/workspace/${attachment.recordType}/${attachment.recordId}/attachments/${attachment.id}/preview`;
+}
+
+function runNextPreviewJob() {
+  if (previewJobActive) return;
+  const job = pendingPreviewJobs.shift();
+  if (!job) return;
+  previewJobActive = true;
+  setImmediate(() => {
+    void job().finally(() => {
+      previewJobActive = false;
+      runNextPreviewJob();
+    });
+  });
+}
+
+function queueHeicPreview(input: {
+  attachmentId: string;
+  projectId: string;
+  sourceObjectPath: string;
+}) {
+  pendingPreviewJobs.push(async () => {
+    const candidatePath = `/objects/uploads/${input.attachmentId}-preview`;
+    try {
+      await withProjectContext(input.projectId, async () => {
+        const preview = await createHeicPreviewWithRetry(
+          attachmentObject(input.sourceObjectPath),
+          attachmentObject(candidatePath),
+          candidatePath,
+        );
+        const [updated] = await db.update(recordAttachmentsTable).set({
+          previewObjectPath: preview.objectPath,
+          previewStatus: preview.status,
+          previewError: preview.error,
+        }).where(and(
+          eq(recordAttachmentsTable.id, input.attachmentId),
+          eq(recordAttachmentsTable.projectId, input.projectId),
+          eq(recordAttachmentsTable.previewStatus, "processing"),
+        )).returning({ id: recordAttachmentsTable.id });
+        if (!updated && preview.objectPath) {
+          await attachmentObject(preview.objectPath).delete({ ignoreNotFound: true });
+        }
+      });
+    } catch (error: unknown) {
+      logger.error({
+        err: error,
+        attachmentId: input.attachmentId,
+        projectId: input.projectId,
+      }, "Attachment preview background job failed");
+      await attachmentObject(candidatePath).delete({ ignoreNotFound: true }).catch(() => undefined);
+      await withProjectContext(input.projectId, async () => {
+        await db.update(recordAttachmentsTable).set({
+          previewObjectPath: null,
+          previewStatus: "failed",
+          previewError: "Pratinjau gagal diproses. File asli tetap dapat diunduh.",
+        }).where(and(
+          eq(recordAttachmentsTable.id, input.attachmentId),
+          eq(recordAttachmentsTable.projectId, input.projectId),
+          eq(recordAttachmentsTable.previewStatus, "processing"),
+        ));
+      }).catch((updateError: unknown) => {
+        logger.error({
+          err: updateError,
+          attachmentId: input.attachmentId,
+          projectId: input.projectId,
+        }, "Attachment preview failure status could not be saved");
+      });
+    }
+  });
+  runNextPreviewJob();
+}
+
+async function queueLegacyHeicPreview(
+  attachment: typeof recordAttachmentsTable.$inferSelect,
+) {
+  if (
+    attachment.previewStatus !== "original"
+    || !needsHeicPreview(attachment.contentType, attachment.fileName)
+  ) {
+    return false;
+  }
+  const [claimed] = await db.update(recordAttachmentsTable).set({
+    previewStatus: "processing",
+    previewError: null,
+  }).where(and(
+    eq(recordAttachmentsTable.id, attachment.id),
+    eq(recordAttachmentsTable.projectId, attachment.projectId),
+    eq(recordAttachmentsTable.previewStatus, "original"),
+  )).returning({ id: recordAttachmentsTable.id });
+  if (!claimed) return false;
+  attachment.previewStatus = "processing";
+  queueHeicPreview({
+    attachmentId: attachment.id,
+    projectId: attachment.projectId,
+    sourceObjectPath: attachment.objectPath,
+  });
+  return true;
+}
+
 router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => {
   try {
     const access = await ensureProjectAccess(res.locals.clerkUserId);
@@ -84,6 +191,9 @@ router.get("/workspace", async (req, res): Promise<void> => {
   const attachments = onlyProjectRows(access.project.id, await db.select().from(recordAttachmentsTable)
     .where(eq(recordAttachmentsTable.projectId, access.project.id))
     .orderBy(desc(recordAttachmentsTable.createdAt)));
+  for (const attachment of attachments) {
+    await queueLegacyHeicPreview(attachment);
+  }
   const events = onlyProjectRows(access.project.id, await db.select({
     id: auditEventsTable.id,
     projectId: auditEventsTable.projectId,
@@ -123,9 +233,7 @@ router.get("/workspace", async (req, res): Promise<void> => {
         size: attachment.size,
         createdAt: attachment.createdAt.toISOString(),
         downloadUrl: `/api/workspace/${record.type}/${record.id}/attachments/${attachment.id}/content`,
-        previewUrl: attachment.previewStatus === "failed"
-          ? null
-          : `/api/workspace/${record.type}/${record.id}/attachments/${attachment.id}/preview`,
+        previewUrl: attachmentPreviewUrl(attachment),
         previewStatus: attachment.previewStatus,
         previewError: attachment.previewError,
       }));
@@ -281,16 +389,8 @@ router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<
     res.status(400).json({ error: "Isi file tidak sesuai metadata atau melebihi batas 25 MB." });
     return;
   }
-  let previewStatus: "original" | "ready" | "failed" = "original";
-  let previewObjectPath: string | null = null;
-  let previewError: string | null = null;
-  if (needsHeicPreview(actualContentType, body.data.fileName)) {
-    const candidatePath = `/objects/uploads/${randomUUID()}-preview`;
-    const preview = await createHeicPreview(object, attachmentObject(candidatePath), candidatePath);
-    previewStatus = preview.status;
-    previewObjectPath = preview.objectPath;
-    previewError = preview.error;
-  }
+  const requiresPreview = needsHeicPreview(actualContentType, body.data.fileName);
+  const previewStatus: "original" | "processing" = requiresPreview ? "processing" : "original";
 
   const attachment = await db.transaction(async (tx) => {
     const [claimedUpload] = await tx.delete(attachmentUploadsTable).where(and(
@@ -310,9 +410,7 @@ router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<
       fileName: body.data.fileName,
       contentType: actualContentType,
       size: actualSize,
-      previewObjectPath,
       previewStatus,
-      previewError,
       uploadedBy: access.user.id,
     }).returning();
     await tx.insert(auditEventsTable).values({
@@ -327,11 +425,15 @@ router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<
     return inserted[0];
   });
   if (!attachment) {
-    if (previewObjectPath) {
-      await attachmentObject(previewObjectPath).delete({ ignoreNotFound: true });
-    }
     res.status(409).json({ error: "Sesi unggah sudah kedaluwarsa atau telah diproses." });
     return;
+  }
+  if (requiresPreview) {
+    queueHeicPreview({
+      attachmentId: attachment.id,
+      projectId: attachment.projectId,
+      sourceObjectPath: attachment.objectPath,
+    });
   }
   res.status(201).json(CreateRecordAttachmentResponse.parse({
     id: attachment.id,
@@ -340,9 +442,7 @@ router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<
     size: attachment.size,
     createdAt: attachment.createdAt.toISOString(),
     downloadUrl: `/api/workspace/${attachment.recordType}/${attachment.recordId}/attachments/${attachment.id}/content`,
-    previewUrl: attachment.previewStatus === "failed"
-      ? null
-      : `/api/workspace/${attachment.recordType}/${attachment.recordId}/attachments/${attachment.id}/preview`,
+    previewUrl: attachmentPreviewUrl(attachment),
     previewStatus: attachment.previewStatus,
     previewError: attachment.previewError,
   }));
@@ -385,37 +485,20 @@ router.get("/workspace/:collection/:id/attachments/:attachmentId/preview", async
     res.status(404).json({ error: "Lampiran tidak ditemukan." });
     return;
   }
-  let previewStatus = attachment.previewStatus;
-  let previewObjectPath = attachment.previewObjectPath;
-  let previewError = attachment.previewError;
-  if (
-    previewStatus === "original"
-    && needsHeicPreview(attachment.contentType, attachment.fileName)
-  ) {
-    const candidatePath = `/objects/uploads/${attachment.id}-preview`;
-    const preview = await createHeicPreview(
-      attachmentObject(attachment.objectPath),
-      attachmentObject(candidatePath),
-      candidatePath,
-    );
-    previewStatus = preview.status;
-    previewObjectPath = preview.objectPath;
-    previewError = preview.error;
-    await db.update(recordAttachmentsTable).set({
-      previewObjectPath,
-      previewStatus,
-      previewError,
-    }).where(and(
-      eq(recordAttachmentsTable.id, attachment.id),
-      eq(recordAttachmentsTable.projectId, access.project.id),
-    ));
+  if (await queueLegacyHeicPreview(attachment)) {
+    res.status(202).json({ error: "Pratinjau sedang diproses." });
+    return;
   }
-  if (previewStatus === "failed") {
-    res.status(422).json({ error: previewError || "Pratinjau tidak dapat dibuat." });
+  if (attachment.previewStatus === "processing") {
+    res.status(202).json({ error: "Pratinjau masih diproses." });
+    return;
+  }
+  if (attachment.previewStatus === "failed") {
+    res.status(422).json({ error: attachment.previewError || "Pratinjau tidak dapat dibuat." });
     return;
   }
   await streamAttachmentPreview(
-    attachmentObject(previewObjectPath || attachment.objectPath),
+    attachmentObject(attachment.previewObjectPath || attachment.objectPath),
     res,
   );
 });

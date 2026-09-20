@@ -129,6 +129,7 @@ export type AttachmentPreviewStatus = typeof AttachmentPreviewStatus[keyof typeo
 
 export const AttachmentPreviewStatus = {
   original: 'original',
+  processing: 'processing',
   ready: 'ready',
   failed: 'failed',
 } as const;

@@ -50,6 +50,17 @@ const attachments: EvidenceAttachment[] = [
   },
 ];
 
+const processingAttachment: EvidenceAttachment = {
+  id: "photo-processing",
+  fileName: "lapangan.heic",
+  contentType: "image/heic",
+  size: 2_400_000,
+  createdAt: "2026-09-20T08:04:00.000Z",
+  downloadUrl: "/download/lapangan.heic",
+  previewUrl: null,
+  previewStatus: "processing",
+};
+
 function renderAttachments(collection: "inspections" | "ncrs") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -105,5 +116,46 @@ describe.each([
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Galeri foto bukti" })).toBeNull();
+  });
+});
+
+describe("status pratinjau bukti", () => {
+  it("menampilkan pemrosesan dan tetap menyediakan unduhan asli", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EvidenceAttachments
+          collection="inspections"
+          recordId="inspection-record"
+          attachments={[processingAttachment]}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("status").textContent).toContain("Pratinjau sedang diproses");
+    const download = screen.getByRole("link", { name: "Unduh asli" });
+    expect(download.getAttribute("href")).toBe("/download/lapangan.heic");
+  });
+
+  it("memperlakukan HEIC lama berstatus original sebagai sedang diproses", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EvidenceAttachments
+          collection="inspections"
+          recordId="inspection-record"
+          attachments={[{ ...processingAttachment, previewStatus: "original" }]}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("status").textContent).toContain("Pratinjau sedang diproses");
+    expect(screen.getByRole("link", { name: "Unduh asli" }).getAttribute("href"))
+      .toBe("/download/lapangan.heic");
+    expect(screen.queryByRole("button", { name: "Buka foto lapangan.heic" })).toBeNull();
   });
 });

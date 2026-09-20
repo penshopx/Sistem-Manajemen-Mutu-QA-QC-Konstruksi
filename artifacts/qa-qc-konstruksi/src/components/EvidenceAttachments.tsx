@@ -12,7 +12,7 @@ export type EvidenceAttachment = {
   createdAt: string;
   downloadUrl: string;
   previewUrl?: string | null;
-  previewStatus: "original" | "ready" | "failed";
+  previewStatus: "original" | "processing" | "ready" | "failed";
   previewError?: string | null;
 };
 
@@ -32,6 +32,18 @@ function isImage(attachment: EvidenceAttachment) {
     || /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i.test(attachment.fileName);
 }
 
+function isPendingPreview(attachment: EvidenceAttachment) {
+  return attachment.previewStatus === "processing"
+    || (
+      attachment.previewStatus === "original"
+      && (
+        attachment.contentType === "image/heic"
+        || attachment.contentType === "image/heif"
+        || /\.(heic|heif)$/i.test(attachment.fileName)
+      )
+    );
+}
+
 function fileSize(size: number) {
   if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.max(1, Math.ceil(size / 1024))} KB`;
@@ -44,8 +56,17 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
   const [activePhoto, setActivePhoto] = useState<number | null>(null);
   const photos = attachments.filter(isImage);
   const documents = attachments.filter((attachment) => !isImage(attachment));
+  const hasProcessingPreview = attachments.some(isPendingPreview);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: getGetWorkspaceQueryKey() });
+
+  useEffect(() => {
+    if (!hasProcessingPreview) return;
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 2_000);
+    return () => window.clearInterval(interval);
+  }, [hasProcessingPreview]);
 
   useEffect(() => {
     if (activePhoto === null) return;
@@ -160,7 +181,23 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
           {photos.map((attachment, index) => (
             <div key={attachment.id} className="group relative aspect-square overflow-hidden rounded-md border border-border bg-muted">
-              {attachment.previewStatus === "failed" || !attachment.previewUrl ? (
+              {isPendingPreview(attachment) ? (
+                <div
+                  className="flex h-full flex-col items-center justify-center gap-2 px-2 text-center text-[10px] text-muted-foreground"
+                  role="status"
+                >
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  <span>Pratinjau sedang diproses</span>
+                  <a
+                    href={attachment.downloadUrl}
+                    download={attachment.fileName}
+                    className="pointer-events-auto inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    <Download className="h-3 w-3" />
+                    Unduh asli
+                  </a>
+                </div>
+              ) : attachment.previewStatus === "failed" || !attachment.previewUrl ? (
                 <div className="flex h-full flex-col items-center justify-center gap-1 px-2 text-center text-[9px] text-destructive">
                   <AlertTriangle className="h-5 w-5" />
                   <span>Pratinjau gagal dibuat</span>

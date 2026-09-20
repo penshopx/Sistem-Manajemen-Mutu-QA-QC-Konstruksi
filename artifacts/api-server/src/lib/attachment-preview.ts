@@ -8,6 +8,9 @@ export type AttachmentPreviewResult =
   | { status: "ready"; objectPath: string; error: null }
   | { status: "failed"; objectPath: null; error: string };
 
+export const ATTACHMENT_PREVIEW_MAX_ATTEMPTS = 3;
+export const ATTACHMENT_PREVIEW_RETRY_DELAY_MS = 1_000;
+
 export function needsHeicPreview(contentType: string, fileName: string) {
   return HEIC_TYPES.has(contentType.toLowerCase()) || /\.(heic|heif)$/i.test(fileName);
 }
@@ -43,4 +46,40 @@ export async function createHeicPreview(
         : "Konversi HEIC gagal karena kesalahan yang tidak diketahui.",
     };
   }
+}
+
+export async function createHeicPreviewWithRetry(
+  source: File,
+  preview: File,
+  previewObjectPath: string,
+  options: {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    convertImage?: typeof convert;
+    wait?: (delayMs: number) => Promise<void>;
+  } = {},
+): Promise<AttachmentPreviewResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? ATTACHMENT_PREVIEW_MAX_ATTEMPTS);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? ATTACHMENT_PREVIEW_RETRY_DELAY_MS);
+  const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolve) => {
+    setTimeout(resolve, delayMs);
+  }));
+  let result: AttachmentPreviewResult = {
+    status: "failed",
+    objectPath: null,
+    error: "Konversi HEIC gagal.",
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    result = await createHeicPreview(
+      source,
+      preview,
+      previewObjectPath,
+      options.convertImage,
+    );
+    if (result.status === "ready") return result;
+    if (attempt < maxAttempts) await wait(retryDelayMs);
+  }
+
+  return result;
 }

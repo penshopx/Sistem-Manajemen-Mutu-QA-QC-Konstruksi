@@ -215,7 +215,7 @@ export const CreateRecordAttachmentResponse = zod.object({
   "createdAt": zod.coerce.date(),
   "downloadUrl": zod.string(),
   "previewUrl": zod.string().nullish(),
-  "previewStatus": zod.enum(['original', 'ready', 'failed']),
+  "previewStatus": zod.enum(['original', 'processing', 'ready', 'failed']),
   "previewError": zod.string().nullish()
 })
 
