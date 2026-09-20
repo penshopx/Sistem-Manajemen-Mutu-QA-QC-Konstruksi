@@ -1,9 +1,10 @@
 type RecordData = Record<string, unknown>;
+type RecordType = "qualityPlans" | "itps" | "inspections" | "ncrs" | "documents" | "audits";
 
 type AuditContext = {
   projectId: string;
   actorUserId: string;
-  recordType: string;
+  recordType: RecordType;
   recordId: string;
 };
 

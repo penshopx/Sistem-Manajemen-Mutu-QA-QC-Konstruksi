@@ -51,6 +51,7 @@ import {
   deletedRecordAudit,
   updatedRecordAudit,
 } from "../lib/record-audit";
+import { executeAuditedMutation } from "../lib/record-transaction";
 import { onlyProjectRows } from "../lib/project-scope";
 
 const router: IRouter = Router();
@@ -386,21 +387,25 @@ router.post("/workspace/:collection", async (req, res): Promise<void> => {
   const id = String(body.data.id || randomUUID());
   const { id: _inputId, ...data } = body.data;
   const [created] = await db.transaction(async (tx) => {
-    const inserted = await tx.insert(qaqcRecordsTable).values({
-      id,
-      projectId: access.project.id,
-      type: params.data.collection,
-      data,
-      createdBy: access.user.id,
-      updatedBy: access.user.id,
-    }).returning();
-    await tx.insert(auditEventsTable).values(createdRecordAudit({
-      projectId: access.project.id,
-      actorUserId: access.user.id,
-      recordType: params.data.collection,
-      recordId: id,
-    }, body.data));
-    return inserted;
+    return executeAuditedMutation(
+      tx,
+      (transaction) => transaction.insert(qaqcRecordsTable).values({
+        id,
+        projectId: access.project.id,
+        type: params.data.collection,
+        data,
+        createdBy: access.user.id,
+        updatedBy: access.user.id,
+      }).returning(),
+      async (transaction) => {
+        await transaction.insert(auditEventsTable).values(createdRecordAudit({
+          projectId: access.project.id,
+          actorUserId: access.user.id,
+          recordType: params.data.collection,
+          recordId: id,
+        }, body.data));
+      },
+    );
   });
   res.status(201).json({ ...created.data, id: created.id });
 });
@@ -426,17 +431,24 @@ router.patch("/workspace/:collection/:id", async (req, res): Promise<void> => {
     if (!existing) return null;
     const data = { ...existing.data, ...body.data };
     delete data.id;
-    const [updated] = await tx.update(qaqcRecordsTable).set({
-      data,
-      updatedBy: access.user.id,
-    }).where(eq(qaqcRecordsTable.id, existing.id)).returning();
-    await tx.insert(auditEventsTable).values(updatedRecordAudit({
-      projectId: access.project.id,
-      actorUserId: access.user.id,
-      recordType: params.data.collection,
-      recordId: existing.id,
-    }, existing.data, data));
-    return { ...updated.data, id: updated.id };
+    return executeAuditedMutation(
+      tx,
+      async (transaction) => {
+        const [updated] = await transaction.update(qaqcRecordsTable).set({
+          data,
+          updatedBy: access.user.id,
+        }).where(eq(qaqcRecordsTable.id, existing.id)).returning();
+        return { ...updated.data, id: updated.id };
+      },
+      async (transaction) => {
+        await transaction.insert(auditEventsTable).values(updatedRecordAudit({
+          projectId: access.project.id,
+          actorUserId: access.user.id,
+          recordType: params.data.collection,
+          recordId: existing.id,
+        }, existing.data, data));
+      },
+    );
   });
   if (!result) {
     res.status(404).json({ error: "Record tidak ditemukan." });
@@ -463,14 +475,21 @@ router.delete("/workspace/:collection/:id", async (req, res): Promise<void> => {
       eq(qaqcRecordsTable.type, params.data.collection),
     )).limit(1);
     if (!existing) return false;
-    await tx.delete(qaqcRecordsTable).where(eq(qaqcRecordsTable.id, existing.id));
-    await tx.insert(auditEventsTable).values(deletedRecordAudit({
-      projectId: access.project.id,
-      actorUserId: access.user.id,
-      recordType: params.data.collection,
-      recordId: existing.id,
-    }, existing.data));
-    return true;
+    return executeAuditedMutation(
+      tx,
+      async (transaction) => {
+        await transaction.delete(qaqcRecordsTable).where(eq(qaqcRecordsTable.id, existing.id));
+        return true;
+      },
+      async (transaction) => {
+        await transaction.insert(auditEventsTable).values(deletedRecordAudit({
+          projectId: access.project.id,
+          actorUserId: access.user.id,
+          recordType: params.data.collection,
+          recordId: existing.id,
+        }, existing.data));
+      },
+    );
   });
   if (!deleted) {
     res.status(404).json({ error: "Record tidak ditemukan." });
