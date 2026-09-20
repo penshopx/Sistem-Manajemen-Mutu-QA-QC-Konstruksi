@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { Storage, type File } from "@google-cloud/storage";
-import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import {
   attachmentCleanupEventsTable,
   attachmentUploadsTable,
   recordAttachmentsTable,
 } from "@workspace/db";
-import { runAttachmentUploadCleanup } from "./attachment-upload-cleanup";
+import {
+  runAttachmentCleanupCycle,
+  runAttachmentUploadCleanup,
+} from "./attachment-upload-cleanup";
 import { logger } from "./logger";
 import { withBootstrapContext } from "./tenant-database";
 
@@ -15,6 +18,7 @@ export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
 export const ATTACHMENT_UPLOAD_GRACE_PERIOD_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 100;
+const CLEANUP_HISTORY_RETENTION_BATCH_SIZE = 1_000;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -87,71 +91,87 @@ export async function createAttachmentUploadUrl() {
 }
 
 export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
-  const result = await withBootstrapContext((db) => runAttachmentUploadCleanup({
-    async listCandidates(cleanupNow, staleClaimBefore) {
-      return db.select({
-        id: attachmentUploadsTable.id,
-        objectPath: attachmentUploadsTable.objectPath,
-        projectId: attachmentUploadsTable.projectId,
-      }).from(attachmentUploadsTable).where(and(
-        or(
-          isNull(attachmentUploadsTable.cleanupStartedAt),
-          lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
-        ),
-        lt(attachmentUploadsTable.expiresAt, cleanupNow),
-      )).limit(CLEANUP_BATCH_SIZE);
+  const { cleanup, retention } = await runAttachmentCleanupCycle({
+    cleanup: () => withBootstrapContext((db) => runAttachmentUploadCleanup({
+        async listCandidates(cleanupNow, staleClaimBefore) {
+          return db.select({
+            id: attachmentUploadsTable.id,
+            objectPath: attachmentUploadsTable.objectPath,
+            projectId: attachmentUploadsTable.projectId,
+          }).from(attachmentUploadsTable).where(and(
+            or(
+              isNull(attachmentUploadsTable.cleanupStartedAt),
+              lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
+            ),
+            lt(attachmentUploadsTable.expiresAt, cleanupNow),
+          )).limit(CLEANUP_BATCH_SIZE);
+        },
+        async claimCandidate(id, cleanupNow, staleClaimBefore) {
+          const [claimed] = await db.update(attachmentUploadsTable)
+            .set({ cleanupStartedAt: cleanupNow })
+            .where(and(
+              eq(attachmentUploadsTable.id, id),
+              or(
+                isNull(attachmentUploadsTable.cleanupStartedAt),
+                lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
+              ),
+            ))
+            .returning({ id: attachmentUploadsTable.id });
+          return Boolean(claimed);
+        },
+        async hasAttachment(objectPath) {
+          const [attachment] = await db.select({ id: recordAttachmentsTable.id })
+            .from(recordAttachmentsTable)
+            .where(eq(recordAttachmentsTable.objectPath, objectPath))
+            .limit(1);
+          return Boolean(attachment);
+        },
+        async deleteObject(objectPath) {
+          await attachmentObject(objectPath).delete({ ignoreNotFound: true });
+        },
+        async deleteTrackingRow(id) {
+          await db.delete(attachmentUploadsTable).where(eq(attachmentUploadsTable.id, id));
+        },
+        async releaseClaim(id) {
+          await db.update(attachmentUploadsTable)
+            .set({ cleanupStartedAt: null })
+            .where(eq(attachmentUploadsTable.id, id));
+        },
+        async recordOutcome(candidate, outcome, error) {
+          if (!candidate.projectId) return;
+          await db.insert(attachmentCleanupEventsTable).values({
+            projectId: candidate.projectId,
+            uploadId: candidate.id,
+            outcome,
+            errorMessage: outcome === "failed"
+              ? error instanceof Error ? error.message.slice(0, 500) : "Kegagalan storage tidak diketahui"
+              : null,
+          });
+        },
+        reportCleanupError(err, uploadId) {
+          logger.error({ err, uploadId }, "Failed to clean orphaned attachment upload");
+        },
+        reportReleaseError(err, uploadId) {
+          logger.error({ err, uploadId }, "Failed to release attachment cleanup claim");
+        },
+      }, now)),
+    deleteEventsBefore: (cutoff) => withBootstrapContext(async (db) => {
+        const expired = await db.select({ id: attachmentCleanupEventsTable.id })
+          .from(attachmentCleanupEventsTable)
+          .where(lt(attachmentCleanupEventsTable.createdAt, cutoff))
+          .limit(CLEANUP_HISTORY_RETENTION_BATCH_SIZE);
+        if (expired.length === 0) return 0;
+        const deleted = await db.delete(attachmentCleanupEventsTable)
+          .where(inArray(attachmentCleanupEventsTable.id, expired.map(({ id }) => id)))
+          .returning({ id: attachmentCleanupEventsTable.id });
+        return deleted.length;
+      }),
+    reportRetentionError(err, cutoff) {
+      logger.error({ err, cutoff }, "Failed to prune attachment cleanup history");
     },
-    async claimCandidate(id, cleanupNow, staleClaimBefore) {
-      const [claimed] = await db.update(attachmentUploadsTable)
-        .set({ cleanupStartedAt: cleanupNow })
-        .where(and(
-          eq(attachmentUploadsTable.id, id),
-          or(
-            isNull(attachmentUploadsTable.cleanupStartedAt),
-            lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
-          ),
-        ))
-        .returning({ id: attachmentUploadsTable.id });
-      return Boolean(claimed);
-    },
-    async hasAttachment(objectPath) {
-      const [attachment] = await db.select({ id: recordAttachmentsTable.id })
-        .from(recordAttachmentsTable)
-        .where(eq(recordAttachmentsTable.objectPath, objectPath))
-        .limit(1);
-      return Boolean(attachment);
-    },
-    async deleteObject(objectPath) {
-      await attachmentObject(objectPath).delete({ ignoreNotFound: true });
-    },
-    async deleteTrackingRow(id) {
-      await db.delete(attachmentUploadsTable).where(eq(attachmentUploadsTable.id, id));
-    },
-    async releaseClaim(id) {
-      await db.update(attachmentUploadsTable)
-        .set({ cleanupStartedAt: null })
-        .where(eq(attachmentUploadsTable.id, id));
-    },
-    async recordOutcome(candidate, outcome, error) {
-      if (!candidate.projectId) return;
-      await db.insert(attachmentCleanupEventsTable).values({
-        projectId: candidate.projectId,
-        uploadId: candidate.id,
-        outcome,
-        errorMessage: outcome === "failed"
-          ? error instanceof Error ? error.message.slice(0, 500) : "Kegagalan storage tidak diketahui"
-          : null,
-      });
-    },
-    reportCleanupError(err, uploadId) {
-      logger.error({ err, uploadId }, "Failed to clean orphaned attachment upload");
-    },
-    reportReleaseError(err, uploadId) {
-      logger.error({ err, uploadId }, "Failed to release attachment cleanup claim");
-    },
-  }, now));
-  logger.info(result, "Finished orphaned attachment upload cleanup");
-  return result;
+  }, now);
+  logger.info({ ...cleanup, retention }, "Finished orphaned attachment upload cleanup");
+  return cleanup;
 }
 
 export function startAttachmentUploadCleanup() {

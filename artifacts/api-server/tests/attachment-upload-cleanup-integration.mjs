@@ -10,7 +10,11 @@ const entry = path.join(directory, "entry.ts");
 const output = path.join(directory, "entry.mjs");
 
 await writeFile(entry, `
-  export { runAttachmentUploadCleanup } from "${path.resolve("src/lib/attachment-upload-cleanup.ts").replaceAll("\\", "/")}";
+  export {
+    CLEANUP_HISTORY_RETENTION_MS,
+    runAttachmentUploadCleanup,
+    runCleanupHistoryRetention,
+  } from "${path.resolve("src/lib/attachment-upload-cleanup.ts").replaceAll("\\", "/")}";
 `);
 await build({
   entryPoints: [entry],
@@ -20,7 +24,11 @@ await build({
   platform: "node",
 });
 
-const { runAttachmentUploadCleanup } = await import(pathToFileURL(output).href);
+const {
+  CLEANUP_HISTORY_RETENTION_MS,
+  runAttachmentUploadCleanup,
+  runCleanupHistoryRetention,
+} = await import(pathToFileURL(output).href);
 const now = new Date("2026-09-20T12:00:00.000Z");
 
 function createHarness({ uploads, attachments = [], objects, failDeletes = 0 }) {
@@ -130,6 +138,45 @@ function expiredUpload(id, objectPath) {
   assert.equal(first.deleted + second.deleted, 1, "only one cleaner may delete the object");
   assert.equal(harness.state.deleteAttempts.get(parallelPath), 1, "parallel cleaners must not process object twice");
   assert.equal(harness.state.uploads.has("upload-parallel"), false);
+}
+
+{
+  const cutoffs = [];
+  const first = await runCleanupHistoryRetention({
+    async deleteEventsBefore(cutoff) {
+      cutoffs.push(cutoff);
+      return 7;
+    },
+  }, now);
+  assert.equal(first.deleted, 7);
+  assert.equal(first.failed, false);
+  assert.equal(first.cutoff.toISOString(), new Date(now.getTime() - CLEANUP_HISTORY_RETENTION_MS).toISOString());
+
+  const second = await runCleanupHistoryRetention({
+    async deleteEventsBefore(cutoff) {
+      cutoffs.push(cutoff);
+      return 0;
+    },
+  }, now);
+  assert.equal(second.deleted, 0, "repeated retention runs must be safe when nothing remains");
+  assert.deepEqual(cutoffs, [first.cutoff, second.cutoff]);
+}
+
+{
+  const errors = [];
+  const result = await runCleanupHistoryRetention({
+    async deleteEventsBefore() {
+      throw new Error("forced retention failure");
+    },
+    reportRetentionError(error, cutoff) {
+      errors.push({ error, cutoff });
+    },
+  }, now);
+  assert.equal(result.failed, true);
+  assert.equal(result.deleted, 0);
+  assert.equal(errors.length, 1, "retention failures must be reported");
+  assert.match(errors[0].error.message, /forced retention failure/);
+  assert.deepEqual(errors[0].cutoff, result.cutoff);
 }
 
 console.info("Attachment upload cleanup integration checks passed.");

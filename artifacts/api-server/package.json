@@ -7,7 +7,7 @@
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "test:workspace": "node ./tests/workspace-contract.mjs && node ./tests/security-audit-contract.mjs && node ./tests/transaction-rollback-contract.mjs && node ./tests/transaction-rollback-postgres.integration.mjs && node ./tests/project-isolation-contract.mjs && node ./tests/material-traceability-contract.mjs && node ./tests/workspace-refresh-contract.mjs && node ./tests/attachment-upload-cleanup-integration.mjs && node ./tests/attachment-preview-contract.mjs && pnpm --filter @workspace/db run test:tenant-rls",
+    "test:workspace": "node ./tests/workspace-contract.mjs && node ./tests/security-audit-contract.mjs && node ./tests/transaction-rollback-contract.mjs && node ./tests/transaction-rollback-postgres.integration.mjs && node ./tests/project-isolation-contract.mjs && node ./tests/material-traceability-contract.mjs && node ./tests/workspace-refresh-contract.mjs && node ./tests/attachment-upload-cleanup-integration.mjs && node ./tests/cleanup-history-retention-postgres.integration.mjs && node ./tests/attachment-preview-contract.mjs && pnpm --filter @workspace/db run test:tenant-rls",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

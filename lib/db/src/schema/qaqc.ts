@@ -163,6 +163,7 @@ export const attachmentCleanupEventsTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("qaqc_attachment_cleanup_events_created_idx").on(table.createdAt),
     index("qaqc_attachment_cleanup_events_project_created_idx").on(table.projectId, table.createdAt),
     index("qaqc_attachment_cleanup_events_upload_created_idx").on(table.uploadId, table.createdAt),
     tenantPolicy(),

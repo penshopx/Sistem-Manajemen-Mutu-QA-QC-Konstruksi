@@ -1,4 +1,5 @@
 const CLEANUP_CLAIM_TIMEOUT_MS = 30 * 60 * 1000;
+export const CLEANUP_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 type CleanupCandidate = { id: string; objectPath: string; projectId?: string };
 export type CleanupOutcome = "deleted" | "preserved" | "failed";
@@ -14,6 +15,39 @@ export type AttachmentUploadCleanupDependencies = {
   reportCleanupError?(error: unknown, uploadId: string): void;
   reportReleaseError?(error: unknown, uploadId: string): void;
 };
+
+export type CleanupHistoryRetentionDependencies = {
+  deleteEventsBefore(cutoff: Date): Promise<number>;
+  reportRetentionError?(error: unknown, cutoff: Date): void;
+};
+
+export async function runAttachmentCleanupCycle<T>(
+  dependencies: CleanupHistoryRetentionDependencies & {
+    cleanup(): Promise<T>;
+  },
+  now = new Date(),
+) {
+  const cleanup = await dependencies.cleanup();
+  const retention = await runCleanupHistoryRetention(dependencies, now);
+  return { cleanup, retention };
+}
+
+export async function runCleanupHistoryRetention(
+  dependencies: CleanupHistoryRetentionDependencies,
+  now = new Date(),
+) {
+  const cutoff = new Date(now.getTime() - CLEANUP_HISTORY_RETENTION_MS);
+  try {
+    return {
+      cutoff,
+      deleted: await dependencies.deleteEventsBefore(cutoff),
+      failed: false,
+    };
+  } catch (error) {
+    dependencies.reportRetentionError?.(error, cutoff);
+    return { cutoff, deleted: 0, failed: true };
+  }
+}
 
 export async function runAttachmentUploadCleanup(
   dependencies: AttachmentUploadCleanupDependencies,
