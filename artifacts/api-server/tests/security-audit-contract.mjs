@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { build } from "esbuild";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -120,5 +120,52 @@ assert.deepEqual(deletedRecordAudit(context, after), {
   subject: "NCR-001",
   before: after,
 });
+
+const workspaceSource = await readFile(path.resolve("src/routes/workspace.ts"), "utf8");
+const auditContracts = [
+  {
+    action: "Invited member",
+    requiredFields: [
+      "projectId: access.project.id",
+      "actorUserId: access.user.id",
+      "subject: email",
+      "after: { email, role: body.data.role }",
+    ],
+  },
+  {
+    action: "Added evidence",
+    requiredFields: [
+      "projectId: access.project.id",
+      "actorUserId: access.user.id",
+      "recordType: params.data.collection",
+      "recordId: params.data.id",
+      "subject: body.data.fileName",
+      "after: { attachmentId: inserted[0].id, fileName: body.data.fileName, size: body.data.size }",
+    ],
+  },
+  {
+    action: "Deleted evidence",
+    requiredFields: [
+      "projectId: access.project.id",
+      "actorUserId: access.user.id",
+      "recordType: params.data.collection",
+      "recordId: params.data.id",
+      "subject: existing.fileName",
+      "before: { attachmentId: existing.id, fileName: existing.fileName, size: existing.size }",
+    ],
+  },
+];
+
+for (const contract of auditContracts) {
+  const actionIndex = workspaceSource.indexOf(`action: "${contract.action}"`);
+  assert.notEqual(actionIndex, -1, `${contract.action} must create an audit event`);
+  const auditBlock = workspaceSource.slice(Math.max(0, actionIndex - 220), actionIndex + 320);
+  for (const field of contract.requiredFields) {
+    assert.ok(
+      auditBlock.includes(field),
+      `${contract.action} audit must preserve ${field}`,
+    );
+  }
+}
 
 console.info("Authentication, role matrix, and record audit checks passed.");
