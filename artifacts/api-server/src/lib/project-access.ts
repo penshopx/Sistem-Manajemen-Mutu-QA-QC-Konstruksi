@@ -8,6 +8,7 @@ import {
   usersTable,
 } from "@workspace/db";
 import { permissionsByRole } from "./rbac";
+import { invitationMembership } from "./project-scope";
 export { canManageAttachment, canMutate } from "./rbac";
 
 export class ProjectAccessError extends Error {
@@ -73,11 +74,9 @@ export async function ensureProjectAccess(clerkUserId: string) {
           isNull(projectInvitationsTable.acceptedAt),
         )).limit(1);
         if (!invitation) throw new ProjectAccessError();
-        [membership] = await tx.insert(projectMembershipsTable).values({
-          projectId: invitation.projectId,
-          userId: user.id,
-          role: invitation.role,
-        }).returning({
+        [membership] = await tx.insert(projectMembershipsTable).values(
+          invitationMembership(invitation, user.id),
+        ).returning({
           id: projectMembershipsTable.id,
           projectId: projectMembershipsTable.projectId,
           role: projectMembershipsTable.role,

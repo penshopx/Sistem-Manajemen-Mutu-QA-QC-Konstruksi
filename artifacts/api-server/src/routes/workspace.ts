@@ -51,6 +51,7 @@ import {
   deletedRecordAudit,
   updatedRecordAudit,
 } from "../lib/record-audit";
+import { onlyProjectRows } from "../lib/project-scope";
 
 const router: IRouter = Router();
 router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => {
@@ -68,14 +69,15 @@ router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => 
 
 router.get("/workspace", async (req, res): Promise<void> => {
   const access = res.locals.projectAccess as ProjectAccess;
-  const records = await db.select().from(qaqcRecordsTable)
+  const records = onlyProjectRows(access.project.id, await db.select().from(qaqcRecordsTable)
     .where(eq(qaqcRecordsTable.projectId, access.project.id))
-    .orderBy(desc(qaqcRecordsTable.updatedAt));
-  const attachments = await db.select().from(recordAttachmentsTable)
+    .orderBy(desc(qaqcRecordsTable.updatedAt)));
+  const attachments = onlyProjectRows(access.project.id, await db.select().from(recordAttachmentsTable)
     .where(eq(recordAttachmentsTable.projectId, access.project.id))
-    .orderBy(desc(recordAttachmentsTable.createdAt));
-  const events = await db.select({
+    .orderBy(desc(recordAttachmentsTable.createdAt)));
+  const events = onlyProjectRows(access.project.id, await db.select({
     id: auditEventsTable.id,
+    projectId: auditEventsTable.projectId,
     action: auditEventsTable.action,
     subject: auditEventsTable.subject,
     timestamp: auditEventsTable.createdAt,
@@ -84,19 +86,20 @@ router.get("/workspace", async (req, res): Promise<void> => {
     .innerJoin(usersTable, eq(auditEventsTable.actorUserId, usersTable.id))
     .where(eq(auditEventsTable.projectId, access.project.id))
     .orderBy(desc(auditEventsTable.createdAt))
-    .limit(100);
-  const activeMembers = await db.select({
+    .limit(100));
+  const activeMembers = onlyProjectRows(access.project.id, await db.select({
     id: projectMembershipsTable.id,
+    projectId: projectMembershipsTable.projectId,
     name: usersTable.name,
     email: usersTable.email,
     role: projectMembershipsTable.role,
   }).from(projectMembershipsTable)
     .innerJoin(usersTable, eq(projectMembershipsTable.userId, usersTable.id))
-    .where(eq(projectMembershipsTable.projectId, access.project.id));
-  const invitations = await db.select().from(projectInvitationsTable).where(and(
+    .where(eq(projectMembershipsTable.projectId, access.project.id)));
+  const invitations = onlyProjectRows(access.project.id, await db.select().from(projectInvitationsTable).where(and(
     eq(projectInvitationsTable.projectId, access.project.id),
     isNull(projectInvitationsTable.acceptedAt),
-  ));
+  )));
 
   const grouped: Record<string, Record<string, unknown>[]> = {
     qualityPlans: [], itps: [], inspections: [], ncrs: [], documents: [], audits: [],
