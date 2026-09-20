@@ -7,6 +7,7 @@ import {
   recordAttachmentsTable,
 } from "@workspace/db";
 import {
+  parseCleanupHistoryRetentionMs,
   runAttachmentCleanupCycle,
   runAttachmentUploadCleanup,
 } from "./attachment-upload-cleanup";
@@ -90,7 +91,10 @@ export async function createAttachmentUploadUrl() {
   return { uploadURL: body.signed_url, objectPath };
 }
 
-export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
+export async function cleanupOrphanedAttachmentUploads(
+  now = new Date(),
+  retentionMs = parseCleanupHistoryRetentionMs(process.env.CLEANUP_HISTORY_RETENTION_DAYS),
+) {
   const { cleanup, retention } = await runAttachmentCleanupCycle({
     cleanup: () => withBootstrapContext((db) => runAttachmentUploadCleanup({
         async listCandidates(cleanupNow, staleClaimBefore) {
@@ -159,7 +163,7 @@ export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
     reportRetentionError(err, cutoff) {
       logger.error({ err, cutoff }, "Failed to prune attachment cleanup history");
     },
-  }, now);
+  }, now, retentionMs);
   logger.info({ ...cleanup, retention }, "Finished orphaned attachment upload cleanup");
   return cleanup;
 }
@@ -179,8 +183,9 @@ export function deleteExpiredAttachmentCleanupEvents(cutoff: Date) {
 }
 
 export function startAttachmentUploadCleanup() {
+  const retentionMs = parseCleanupHistoryRetentionMs(process.env.CLEANUP_HISTORY_RETENTION_DAYS);
   const run = () => {
-    cleanupOrphanedAttachmentUploads().catch((err) => {
+    cleanupOrphanedAttachmentUploads(new Date(), retentionMs).catch((err) => {
       logger.error({ err }, "Orphaned attachment upload cleanup failed");
     });
   };

@@ -12,6 +12,7 @@ const output = path.join(directory, "entry.mjs");
 await writeFile(entry, `
   export {
     CLEANUP_HISTORY_RETENTION_MS,
+    parseCleanupHistoryRetentionMs,
     runAttachmentUploadCleanup,
     runCleanupHistoryRetention,
   } from "${path.resolve("src/lib/attachment-upload-cleanup.ts").replaceAll("\\", "/")}";
@@ -26,10 +27,24 @@ await build({
 
 const {
   CLEANUP_HISTORY_RETENTION_MS,
+  parseCleanupHistoryRetentionMs,
   runAttachmentUploadCleanup,
   runCleanupHistoryRetention,
 } = await import(pathToFileURL(output).href);
 const now = new Date("2026-09-20T12:00:00.000Z");
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+assert.equal(parseCleanupHistoryRetentionMs(undefined), 30 * DAY_MS);
+assert.equal(parseCleanupHistoryRetentionMs(""), 30 * DAY_MS);
+assert.equal(parseCleanupHistoryRetentionMs("1"), DAY_MS);
+assert.equal(parseCleanupHistoryRetentionMs("3650"), 3_650 * DAY_MS);
+for (const invalid of ["0", "0.5", "30.5", "3651", "abc"]) {
+  assert.throws(
+    () => parseCleanupHistoryRetentionMs(invalid),
+    /must be an integer between 1 and 3650/,
+    `retention value ${invalid} must be rejected`,
+  );
+}
 
 function createHarness({ uploads, attachments = [], objects, failDeletes = 0 }) {
   const state = {
@@ -160,6 +175,22 @@ function expiredUpload(id, objectPath) {
   }, now);
   assert.equal(second.deleted, 0, "repeated retention runs must be safe when nothing remains");
   assert.deepEqual(cutoffs, [first.cutoff, second.cutoff]);
+}
+
+{
+  let cutoff;
+  const result = await runCleanupHistoryRetention({
+    async deleteEventsBefore(value) {
+      cutoff = value;
+      return 1;
+    },
+  }, now, DAY_MS);
+  assert.equal(result.deleted, 1);
+  assert.equal(cutoff.toISOString(), new Date(now.getTime() - DAY_MS).toISOString());
+  await assert.rejects(
+    runCleanupHistoryRetention({ async deleteEventsBefore() { return 0; } }, now, DAY_MS - 1),
+    /preserve at least the latest 24 hours/,
+  );
 }
 
 {

@@ -1,5 +1,25 @@
 const CLEANUP_CLAIM_TIMEOUT_MS = 30 * 60 * 1000;
-export const CLEANUP_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_CLEANUP_HISTORY_RETENTION_DAYS = 30;
+export const MIN_CLEANUP_HISTORY_RETENTION_DAYS = 1;
+export const MAX_CLEANUP_HISTORY_RETENTION_DAYS = 3_650;
+export const CLEANUP_HISTORY_RETENTION_MS = DEFAULT_CLEANUP_HISTORY_RETENTION_DAYS * DAY_MS;
+
+export function parseCleanupHistoryRetentionMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return CLEANUP_HISTORY_RETENTION_MS;
+
+  const days = Number(value);
+  if (
+    !Number.isInteger(days)
+    || days < MIN_CLEANUP_HISTORY_RETENTION_DAYS
+    || days > MAX_CLEANUP_HISTORY_RETENTION_DAYS
+  ) {
+    throw new Error(
+      `CLEANUP_HISTORY_RETENTION_DAYS must be an integer between ${MIN_CLEANUP_HISTORY_RETENTION_DAYS} and ${MAX_CLEANUP_HISTORY_RETENTION_DAYS}`,
+    );
+  }
+  return days * DAY_MS;
+}
 
 type CleanupCandidate = { id: string; objectPath: string; projectId?: string };
 export type CleanupOutcome = "deleted" | "preserved" | "failed";
@@ -26,17 +46,26 @@ export async function runAttachmentCleanupCycle<T>(
     cleanup(): Promise<T>;
   },
   now = new Date(),
+  retentionMs = CLEANUP_HISTORY_RETENTION_MS,
 ) {
   const cleanup = await dependencies.cleanup();
-  const retention = await runCleanupHistoryRetention(dependencies, now);
+  const retention = await runCleanupHistoryRetention(dependencies, now, retentionMs);
   return { cleanup, retention };
 }
 
 export async function runCleanupHistoryRetention(
   dependencies: CleanupHistoryRetentionDependencies,
   now = new Date(),
+  retentionMs = CLEANUP_HISTORY_RETENTION_MS,
 ) {
-  const cutoff = new Date(now.getTime() - CLEANUP_HISTORY_RETENTION_MS);
+  if (
+    !Number.isFinite(retentionMs)
+    || retentionMs < MIN_CLEANUP_HISTORY_RETENTION_DAYS * DAY_MS
+    || retentionMs > MAX_CLEANUP_HISTORY_RETENTION_DAYS * DAY_MS
+  ) {
+    throw new Error("Cleanup history retention must preserve at least the latest 24 hours");
+  }
+  const cutoff = new Date(now.getTime() - retentionMs);
   try {
     return {
       cutoff,
