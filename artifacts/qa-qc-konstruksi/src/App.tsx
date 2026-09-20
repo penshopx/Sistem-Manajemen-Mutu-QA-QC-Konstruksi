@@ -18,6 +18,7 @@ import { DocumentsPage } from "@/pages/Documents";
 import { ReportsPage } from "@/pages/Reports";
 import { TeamPage } from "@/pages/Team";
 import { MaterialsPage } from "@/pages/Materials";
+import { StorageCleanupNotifier } from "@/components/StorageCleanupOperations";
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -116,6 +117,7 @@ function Landing() {
 function AuthenticatedApp() {
   return (
     <StoreProvider>
+      <StorageCleanupNotifier />
       <Shell>
         <Switch>
           <Route path="/" component={Dashboard} />

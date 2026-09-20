@@ -1,13 +1,27 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useGetStorageCleanupOperations } from "@workspace/api-client-react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { StorageCleanupOperations } from "./StorageCleanupOperations";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "@/hooks/use-toast";
+import { useStore } from "@/lib/store";
+import { StorageCleanupNotifier, StorageCleanupOperations } from "./StorageCleanupOperations";
 
 vi.mock("@workspace/api-client-react", () => ({
   useGetStorageCleanupOperations: vi.fn(),
 }));
+vi.mock("@/hooks/use-toast", () => ({ toast: vi.fn() }));
+vi.mock("@/lib/store", () => ({ useStore: vi.fn() }));
 
-afterEach(cleanup);
+beforeEach(() => {
+  window.localStorage.clear();
+  vi.mocked(useStore).mockReturnValue({
+    state: { currentUser: { role: "QA_ENGINEER" } },
+  } as unknown as ReturnType<typeof useStore>);
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 const mockUseOperations = vi.mocked(useGetStorageCleanupOperations);
 
@@ -59,5 +73,57 @@ describe("StorageCleanupOperations", () => {
 
     expect(screen.getByTestId("status-storage-cleanup-healthy")).toBeTruthy();
     expect(screen.queryByTestId("alert-storage-cleanup-warning")).toBeNull();
+  });
+});
+
+describe("StorageCleanupNotifier", () => {
+  it("memberi tahu QA Engineer sekali selama kegagalan yang sama tetap aktif", async () => {
+    setOperationsData(
+      { level: "warning", message: "Satu upload terus gagal dibersihkan." },
+      [{ uploadId: "11111111-1111-1111-1111-111111111111", failureCount: 3 }],
+    );
+
+    const view = render(<StorageCleanupNotifier />);
+
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(toast).mock.calls[0]?.[0].description).toContain("1 upload baru");
+
+    view.rerender(<StorageCleanupNotifier />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
+  it("mengizinkan notifikasi baru setelah masalah pulih lalu berulang", async () => {
+    setOperationsData(
+      { level: "warning", message: "Satu upload terus gagal dibersihkan." },
+      [{ uploadId: "11111111-1111-1111-1111-111111111111", failureCount: 3 }],
+    );
+    const view = render(<StorageCleanupNotifier />);
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+
+    setOperationsData(null);
+    view.rerender(<StorageCleanupNotifier />);
+    await waitFor(() => expect(window.localStorage.getItem("storage-cleanup-notified-failures")).toBe("[]"));
+
+    setOperationsData(
+      { level: "warning", message: "Satu upload kembali gagal dibersihkan." },
+      [{ uploadId: "11111111-1111-1111-1111-111111111111", failureCount: 3 }],
+    );
+    view.rerender(<StorageCleanupNotifier />);
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+  });
+
+  it("tidak meminta status pembersihan untuk peran selain QA Engineer", () => {
+    vi.mocked(useStore).mockReturnValue({
+      state: { currentUser: { role: "SITE_MANAGER" } },
+    } as unknown as ReturnType<typeof useStore>);
+    setOperationsData(null);
+
+    render(<StorageCleanupNotifier />);
+
+    expect(mockUseOperations).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ enabled: false }),
+    }));
+    expect(toast).not.toHaveBeenCalled();
   });
 });

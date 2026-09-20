@@ -1,7 +1,10 @@
+import { useEffect } from "react";
 import { useGetStorageCleanupOperations } from "@workspace/api-client-react";
 import { AlertTriangle, CheckCircle2, Clock3, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/core";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/hooks/use-toast";
+import { useStore } from "@/lib/store";
 
 const QUERY_OPTIONS = {
   queryKey: ["/api/workspace/operations/storage-cleanup"] as const,
@@ -9,6 +12,45 @@ const QUERY_OPTIONS = {
   staleTime: 5_000,
   refetchOnWindowFocus: "always" as const,
 };
+
+const NOTIFIED_FAILURES_KEY = "storage-cleanup-notified-failures";
+
+function readNotifiedFailures(): Set<string> {
+  try {
+    return new Set(JSON.parse(window.localStorage.getItem(NOTIFIED_FAILURES_KEY) ?? "[]") as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+export function StorageCleanupNotifier() {
+  const { state } = useStore();
+  const isQaEngineer = state.currentUser?.role === "QA_ENGINEER";
+  const operations = useGetStorageCleanupOperations({
+    query: { ...QUERY_OPTIONS, enabled: isQaEngineer },
+  });
+
+  useEffect(() => {
+    if (!isQaEngineer || !operations.data) return;
+
+    const activeIds = new Set(operations.data.repeatedFailures.map(({ uploadId }) => uploadId));
+    const notifiedIds = readNotifiedFailures();
+    const newFailures = [...activeIds].filter((uploadId) => !notifiedIds.has(uploadId));
+
+    if (newFailures.length > 0) {
+      toast({
+        variant: "destructive",
+        title: "Kegagalan pembersihan berulang",
+        description: `${newFailures.length} upload baru telah gagal dibersihkan sedikitnya 3 kali. Periksa log API dan koneksi object storage, lalu jalankan ulang pembersihan setelah penyebabnya diperbaiki.`,
+        duration: 12_000,
+      });
+    }
+
+    window.localStorage.setItem(NOTIFIED_FAILURES_KEY, JSON.stringify([...activeIds]));
+  }, [isQaEngineer, operations.data]);
+
+  return null;
+}
 
 const SUMMARY_ITEMS = [
   { key: "pending", label: "Upload tertunda", icon: Clock3, tone: "text-amber-500" },
