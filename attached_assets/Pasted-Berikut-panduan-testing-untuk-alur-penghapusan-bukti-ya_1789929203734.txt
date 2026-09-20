@@ -1,0 +1,291 @@
+Berikut panduan testing untuk alur penghapusan bukti yang memastikan galeri tetap konsisten setelah penghapusan.
+
+---
+
+## Strategi Testing
+
+### 1. Alur Konfirmasi dan Pembatalan
+
+Test harus memverifikasi bahwa penghapusan tidak terjadi tanpa konfirmasi eksplisit:
+
+```typescript
+// artifacts/qa-qc-konstruksi/src/components/EvidenceAttachments.test.tsx
+
+describe('Attachment deletion flow', () => {
+  it('menampilkan dialog konfirmasi sebelum menghapus', async () => {
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    // Klik tombol hapus pada attachment pertama
+    await user.click(screen.getByRole('button', { name: /hapus/i }));
+    
+    // Dialog konfirmasi harus muncul
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText(/yakin ingin menghapus/i)).toBeInTheDocument();
+    
+    // Attachment belum dihapus dari DOM
+    expect(screen.getByAltText(mockAttachment.name)).toBeInTheDocument();
+  });
+
+  it('pembatalan dialog tidak menghapus attachment', async () => {
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    await user.click(screen.getByRole('button', { name: /hapus/i }));
+    await user.click(screen.getByRole('button', { name: /batal/i }));
+    
+    // Dialog hilang
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    
+    // Attachment masih ada
+    expect(screen.getByAltText(mockAttachment.name)).toBeInTheDocument();
+    
+    // API tidak dipanggil
+    expect(mockApi.delete).not.toHaveBeenCalled();
+  });
+
+  it('konfirmasi menghapus attachment dan memanggil API', async () => {
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    await user.click(screen.getByRole('button', { name: /hapus/i }));
+    await user.click(screen.getByRole('button', { name: /hapus/i, /* di dialog */ }));
+    
+    // API dipanggil dengan parameter yang benar
+    expect(mockApi.delete).toHaveBeenCalledWith(
+      `/api/projects/${projectId}/inspections/${inspectionId}/attachments/${mockAttachment.id}`
+    );
+    
+    // Attachment hilang dari galeri
+    await waitFor(() => {
+      expect(screen.queryByAltText(mockAttachment.name)).not.toBeInTheDocument();
+    });
+  });
+});
+```
+
+---
+
+### 2. Endpoint API yang Tepat untuk Inspeksi dan NCR
+
+Test harus memastikan URL endpoint berbeda untuk konteks Inspeksi vs NCR:
+
+```typescript
+describe('API endpoint routing', () => {
+  it('menggunakan endpoint inspeksi untuk attachment inspeksi', async () => {
+    const { user, screen } = renderWithAttachments(
+      [mockAttachment],
+      { context: 'inspection', inspectionId: 'insp-123' }
+    );
+    
+    await deleteAttachment(user, screen, mockAttachment.id);
+    
+    expect(mockApi.delete).toHaveBeenCalledWith(
+      `/api/projects/${projectId}/inspections/insp-123/attachments/${mockAttachment.id}`
+    );
+  });
+
+  it('menggunakan endpoint NCR untuk attachment NCR', async () => {
+    const { user, screen } = renderWithAttachments(
+      [mockAttachment],
+      { context: 'ncr', ncrId: 'ncr-456' }
+    );
+    
+    await deleteAttachment(user, screen, mockAttachment.id);
+    
+    expect(mockApi.delete).toHaveBeenCalledWith(
+      `/api/projects/${projectId}/ncrs/ncr-456/attachments/${mockAttachment.id}`
+    );
+  });
+});
+```
+
+---
+
+### 3. Galeri Tetap Valid Setelah Foto Aktif Dihapus
+
+Ini adalah edge case kritis: ketika foto yang sedang ditampilkan di lightbox/fullscreen dihapus, galeri harus tetap berfungsi:
+
+```typescript
+describe('Active photo deletion', () => {
+  it('menutup lightbox dan menampilkan foto berikutnya saat foto aktif dihapus', async () => {
+    const attachments = [
+      { id: 1, name: 'photo-1.jpg' },
+      { id: 2, name: 'photo-2.jpg' },
+      { id: 3, name: 'photo-3.jpg' },
+    ];
+    
+    const { user, screen } = renderWithAttachments(attachments);
+    
+    // Buka lightbox dengan foto pertama
+    await user.click(screen.getByAltText('photo-1.jpg'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByAltText('photo-1.jpg')).toBeInTheDocument();
+    
+    // Hapus foto pertama dari lightbox
+    await user.click(screen.getByRole('button', { name: /hapus/i }));
+    await user.click(screen.getByRole('button', { name: /hapus/i, /* di dialog */ }));
+    
+    // Lightbox tetap terbuka dengan foto kedua
+    await waitFor(() => {
+      expect(screen.getByAltText('photo-2.jpg')).toBeInTheDocument();
+    });
+    
+    // Foto pertama tidak ada lagi
+    expect(screen.queryByAltText('photo-1.jpg')).not.toBeInTheDocument();
+  });
+
+  it('menutup lightbox saat foto terakhir dihapus', async () => {
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    // Buka lightbox
+    await user.click(screen.getByAltText(mockAttachment.name));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    
+    // Hapus satu-satunya foto
+    await deleteAttachment(user, screen, mockAttachment.id);
+    
+    // Lightbox tertutup
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    
+    // Galeri kosong
+    expect(screen.getByText(/tidak ada lampiran/i)).toBeInTheDocument();
+  });
+
+  it('menyesuaikan indeks galeri setelah penghapusan di tengah', async () => {
+    const attachments = [
+      { id: 1, name: 'photo-1.jpg' },
+      { id: 2, name: 'photo-2.jpg' },
+      { id: 3, name: 'photo-3.jpg' },
+    ];
+    
+    const { user, screen } = renderWithAttachments(attachments);
+    
+    // Buka lightbox dengan foto kedua (index 1)
+    await user.click(screen.getByAltText('photo-2.jpg'));
+    
+    // Hapus foto kedua
+    await deleteAttachment(user, screen, 2);
+    
+    // Lightbox sekarang menampilkan foto ketiga (yang sebelumnya index 2, sekarang index 1)
+    await waitFor(() => {
+      expect(screen.getByAltText('photo-3.jpg')).toBeInTheDocument();
+    });
+    
+    // Navigasi sebelumnya/berikutnya masih berfungsi
+    await user.click(screen.getByRole('button', { name: /sebelumnya/i }));
+    expect(screen.getByAltText('photo-1.jpg')).toBeInTheDocument();
+  });
+});
+```
+
+---
+
+### 4. Kegagalan API Tidak Merusak Daftar
+
+Test harus memastikan bahwa jika API gagal, galeri tetap menampilkan data yang valid:
+
+```typescript
+describe('API failure handling', () => {
+  it('menampilkan pesan error dan mempertahankan attachment saat API gagal', async () => {
+    mockApi.delete.mockRejectedValueOnce(new Error('Network error'));
+    
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    await deleteAttachment(user, screen, mockAttachment.id);
+    
+    // Error message ditampilkan
+    expect(screen.getByText(/gagal menghapus lampiran/i)).toBeInTheDocument();
+    
+    // Attachment masih ada di galeri
+    expect(screen.getByAltText(mockAttachment.name)).toBeInTheDocument();
+    
+    // User bisa mencoba lagi
+    expect(screen.getByRole('button', { name: /hapus/i })).toBeInTheDocument();
+  });
+
+  it('tidak meninggalkan attachment dalam state不一致 saat API timeout', async () => {
+    mockApi.delete.mockImplementation(() => new Promise(() => {})); // Never resolves
+    
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    await deleteAttachment(user, screen, mockAttachment.id);
+    
+    // Loading state ditampilkan
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    
+    // Attachment masih ada (belum dihapus dari state)
+    expect(screen.getByAltText(mockAttachment.name)).toBeInTheDocument();
+  });
+
+  it('menampilkan pesan spesifik untuk error 404 (attachment sudah dihapus)', async () => {
+    mockApi.delete.mockRejectedValueOnce({ status: 404 });
+    
+    const { user, screen } = renderWithAttachments([mockAttachment]);
+    
+    await deleteAttachment(user, screen, mockAttachment.id);
+    
+    // Pesan error spesifik
+    expect(screen.getByText(/lampiran tidak ditemukan atau sudah dihapus/i)).toBeInTheDocument();
+    
+    // Attachment dihapus dari state lokal (karena memang sudah tidak ada di server)
+    await waitFor(() => {
+      expect(screen.queryByAltText(mockAttachment.name)).not.toBeInTheDocument();
+    });
+  });
+});
+```
+
+---
+
+### 5. Helper Function untuk Test
+
+```typescript
+// Helper untuk menghapus attachment dengan konfirmasi
+async function deleteAttachment(
+  user: UserEvent,
+  screen: Screen,
+  attachmentId: number
+) {
+  await user.click(screen.getByRole('button', { name: /hapus/i }));
+  await user.click(
+    screen.getByRole('button', { name: /hapus/i }) // Tombol di dialog
+  );
+}
+
+// Helper untuk render dengan attachments
+function renderWithAttachments(
+  attachments: Attachment[],
+  options: { context: 'inspection' | 'ncr'; inspectionId?: string; ncrId?: string }
+) {
+  return render(
+    <EvidenceAttachments
+      attachments={attachments}
+      context={options.context}
+      inspectionId={options.inspectionId}
+      ncrId={options.ncrId}
+      onDelete={mockApi.delete}
+    />
+  );
+}
+```
+
+---
+
+## Ringkasan Coverage
+
+| Skenario | Status |
+|---|---|
+| Dialog konfirmasi muncul | ✅ |
+| Pembatalan tidak menghapus | ✅ |
+| Konfirmasi memanggil API | ✅ |
+| Endpoint berbeda untuk Inspeksi vs NCR | ✅ |
+| Foto aktif dihapus → lightbox tetap berfungsi | ✅ |
+| Foto terakhir dihapus → lightbox tertutup | ✅ |
+| Indeks galeri menyesuaikan setelah penghapusan | ✅ |
+| API gagal → attachment tetap ada | ✅ |
+| API timeout → loading state | ✅ |
+| Error 404 → attachment dihapus dari state | ✅ |
+
+---
+
+Test cases ini memastikan bahwa alur penghapusan tidak hanya berfungsi di happy path, tetapi juga menangani edge cases yang dapat merusak pengalaman pengguna atau integritas data galeri.
