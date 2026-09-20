@@ -72,4 +72,14 @@ for (const table of ["qaqcRecordsTable", "recordAttachmentsTable"]) {
   );
 }
 
+for (const route of ["workspace.ts", "materials.ts", "operations.ts"]) {
+  const source = await readFile(path.resolve("src/routes", route), "utf8");
+  assert.doesNotMatch(
+    source,
+    /import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@workspace\/db["']/s,
+    `${route} must not use the global database connection for tenant data`,
+  );
+  assert.match(source, /tenantDatabase as db/, `${route} must use the tenant-scoped database`);
+}
+
 console.info("Cross-project workspace isolation checks passed.");

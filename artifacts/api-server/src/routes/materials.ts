@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
-  auditEventsTable, db, materialBatchesTable, materialInventoryTable,
+  auditEventsTable, materialBatchesTable, materialInventoryTable,
   materialStorageLocationsTable, materialTypesTable, materialUsageTable,
 } from "@workspace/db";
 import {
@@ -14,12 +14,18 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth } from "../middlewares/auth";
 import { canMutate, ensureProjectAccess, ProjectAccessError, type ProjectAccess } from "../lib/project-access";
+import { tenantDatabase as db, withProjectContext } from "../lib/tenant-database";
 
 const router: IRouter = Router();
 router.use("/materials", requireAuth, async (_req, res, next): Promise<void> => {
   try {
-    res.locals.projectAccess = await ensureProjectAccess(res.locals.clerkUserId);
-    next();
+    const projectAccess = await ensureProjectAccess(res.locals.clerkUserId);
+    res.locals.projectAccess = projectAccess;
+    await withProjectContext(projectAccess.project.id, () => new Promise<void>((resolve) => {
+      res.once("finish", resolve);
+      res.once("close", resolve);
+      next();
+    }));
   } catch (error) {
     if (error instanceof ProjectAccessError) { res.status(403).json({ error: error.message }); return; }
     next(error);

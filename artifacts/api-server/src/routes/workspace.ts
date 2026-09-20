@@ -4,7 +4,6 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   attachmentUploadsTable,
   auditEventsTable,
-  db,
   projectInvitationsTable,
   projectMembershipsTable,
   qaqcRecordsTable,
@@ -56,12 +55,18 @@ import {
 } from "../lib/record-audit";
 import { executeAuditedMutation } from "../lib/record-transaction";
 import { onlyProjectRows } from "../lib/project-scope";
+import { tenantDatabase as db, withProjectContext } from "../lib/tenant-database";
 
 const router: IRouter = Router();
 router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => {
   try {
-    res.locals.projectAccess = await ensureProjectAccess(res.locals.clerkUserId);
-    next();
+    const access = await ensureProjectAccess(res.locals.clerkUserId);
+    res.locals.projectAccess = access;
+    await withProjectContext(access.project.id, () => new Promise<void>((resolve) => {
+      res.once("finish", resolve);
+      res.once("close", resolve);
+      next();
+    }));
   } catch (error) {
     if (error instanceof ProjectAccessError) {
       res.status(403).json({ error: error.message });

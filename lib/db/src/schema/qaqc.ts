@@ -3,14 +3,22 @@ import {
   integer,
   jsonb,
   pgEnum,
+  pgPolicy,
   pgTable,
   text,
   timestamp,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+
+const tenantPolicy = () => pgPolicy("project_isolation", {
+  for: "all",
+  using: sql`project_id = nullif(current_setting('app.current_project_id', true), '')::uuid OR current_setting('app.tenant_bootstrap', true) = 'on'`,
+  withCheck: sql`project_id = nullif(current_setting('app.current_project_id', true), '')::uuid OR current_setting('app.tenant_bootstrap', true) = 'on'`,
+});
 
 export const projectRoleEnum = pgEnum("project_role", [
   "QA_ENGINEER",
@@ -62,8 +70,9 @@ export const projectMembershipsTable = pgTable(
   (table) => [
     uniqueIndex("project_memberships_project_user_unique").on(table.projectId, table.userId),
     index("project_memberships_user_idx").on(table.userId),
+    tenantPolicy(),
   ],
-);
+).enableRLS();
 
 export const projectInvitationsTable = pgTable(
   "project_invitations",
@@ -79,8 +88,9 @@ export const projectInvitationsTable = pgTable(
   (table) => [
     uniqueIndex("project_invitations_project_email_unique").on(table.projectId, table.email),
     index("project_invitations_email_idx").on(table.email),
+    tenantPolicy(),
   ],
-);
+).enableRLS();
 
 export const qaqcRecordsTable = pgTable(
   "qaqc_records",
@@ -96,8 +106,9 @@ export const qaqcRecordsTable = pgTable(
   },
   (table) => [
     index("qaqc_records_project_type_idx").on(table.projectId, table.type),
+    tenantPolicy(),
   ],
-);
+).enableRLS();
 
 export const recordAttachmentsTable = pgTable(
   "qaqc_record_attachments",
@@ -118,8 +129,9 @@ export const recordAttachmentsTable = pgTable(
   },
   (table) => [
     index("qaqc_attachments_project_record_idx").on(table.projectId, table.recordType, table.recordId),
+    tenantPolicy(),
   ],
-);
+).enableRLS();
 
 export const attachmentUploadsTable = pgTable(
   "qaqc_attachment_uploads",
@@ -136,8 +148,9 @@ export const attachmentUploadsTable = pgTable(
   },
   (table) => [
     index("qaqc_attachment_uploads_cleanup_idx").on(table.cleanupStartedAt, table.expiresAt),
+    tenantPolicy(),
   ],
-);
+).enableRLS();
 
 export const attachmentCleanupEventsTable = pgTable(
   "qaqc_attachment_cleanup_events",
@@ -152,8 +165,9 @@ export const attachmentCleanupEventsTable = pgTable(
   (table) => [
     index("qaqc_attachment_cleanup_events_project_created_idx").on(table.projectId, table.createdAt),
     index("qaqc_attachment_cleanup_events_upload_created_idx").on(table.uploadId, table.createdAt),
+    tenantPolicy(),
   ],
-);
+).enableRLS();
 
 export const auditEventsTable = pgTable(
   "audit_events",
@@ -169,8 +183,8 @@ export const auditEventsTable = pgTable(
     after: jsonb("after").$type<Record<string, unknown> | null>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index("audit_events_project_created_idx").on(table.projectId, table.createdAt)],
-);
+  (table) => [index("audit_events_project_created_idx").on(table.projectId, table.createdAt), tenantPolicy()],
+).enableRLS();
 
 export const insertProjectSchema = createInsertSchema(projectsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertQaqcRecordSchema = createInsertSchema(qaqcRecordsTable).omit({ createdAt: true, updatedAt: true });

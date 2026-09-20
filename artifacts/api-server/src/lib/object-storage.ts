@@ -4,11 +4,11 @@ import { and, eq, isNull, lt, or } from "drizzle-orm";
 import {
   attachmentCleanupEventsTable,
   attachmentUploadsTable,
-  db,
   recordAttachmentsTable,
 } from "@workspace/db";
 import { runAttachmentUploadCleanup } from "./attachment-upload-cleanup";
 import { logger } from "./logger";
+import { withBootstrapContext } from "./tenant-database";
 
 const sidecar = "http://127.0.0.1:1106";
 export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
@@ -87,7 +87,7 @@ export async function createAttachmentUploadUrl() {
 }
 
 export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
-  const result = await runAttachmentUploadCleanup({
+  const result = await withBootstrapContext((db) => runAttachmentUploadCleanup({
     async listCandidates(cleanupNow, staleClaimBefore) {
       return db.select({
         id: attachmentUploadsTable.id,
@@ -149,7 +149,7 @@ export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
     reportReleaseError(err, uploadId) {
       logger.error({ err, uploadId }, "Failed to release attachment cleanup claim");
     },
-  }, now);
+  }, now));
   logger.info(result, "Finished orphaned attachment upload cleanup");
   return result;
 }

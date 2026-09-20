@@ -1,7 +1,14 @@
 import { createInsertSchema } from "drizzle-zod";
+import { sql } from "drizzle-orm";
 import { z } from "zod/v4";
-import { index, integer, pgTable, text, timestamp, uuid, uniqueIndex } from "drizzle-orm/pg-core";
+import { index, integer, pgPolicy, pgTable, text, timestamp, uuid, uniqueIndex } from "drizzle-orm/pg-core";
 import { projectsTable, usersTable, qaqcRecordsTable } from "./qaqc";
+
+const tenantPolicy = () => pgPolicy("project_isolation", {
+  for: "all",
+  using: sql`project_id = nullif(current_setting('app.current_project_id', true), '')::uuid OR current_setting('app.tenant_bootstrap', true) = 'on'`,
+  withCheck: sql`project_id = nullif(current_setting('app.current_project_id', true), '')::uuid OR current_setting('app.tenant_bootstrap', true) = 'on'`,
+});
 
 export const materialTypesTable = pgTable("material_types", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -11,7 +18,7 @@ export const materialTypesTable = pgTable("material_types", {
   specification: text("specification"),
   unit: text("unit").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("material_types_project_idx").on(table.projectId)]);
+}, (table) => [index("material_types_project_idx").on(table.projectId), tenantPolicy()]).enableRLS();
 
 export const materialStorageLocationsTable = pgTable("material_storage_locations", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -19,7 +26,7 @@ export const materialStorageLocationsTable = pgTable("material_storage_locations
   name: text("name").notNull(),
   description: text("description"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("material_storage_locations_project_idx").on(table.projectId)]);
+}, (table) => [index("material_storage_locations_project_idx").on(table.projectId), tenantPolicy()]).enableRLS();
 
 export const materialBatchesTable = pgTable("material_batches", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -38,7 +45,8 @@ export const materialBatchesTable = pgTable("material_batches", {
 }, (table) => [
   index("material_batches_project_idx").on(table.projectId),
   uniqueIndex("material_batches_project_number_unique").on(table.projectId, table.batchNumber),
-]);
+  tenantPolicy(),
+]).enableRLS();
 
 export const materialInventoryTable = pgTable("material_inventory", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -47,7 +55,7 @@ export const materialInventoryTable = pgTable("material_inventory", {
   storageLocationId: uuid("storage_location_id").notNull().references(() => materialStorageLocationsTable.id),
   quantity: integer("quantity").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-}, (table) => [uniqueIndex("material_inventory_batch_location_unique").on(table.batchId, table.storageLocationId)]);
+}, (table) => [uniqueIndex("material_inventory_batch_location_unique").on(table.batchId, table.storageLocationId), tenantPolicy()]).enableRLS();
 
 export const materialUsageTable = pgTable("material_usage", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -60,7 +68,7 @@ export const materialUsageTable = pgTable("material_usage", {
   inspectionId: text("inspection_id").references(() => qaqcRecordsTable.id),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("material_usage_project_batch_idx").on(table.projectId, table.batchId)]);
+}, (table) => [index("material_usage_project_batch_idx").on(table.projectId, table.batchId), tenantPolicy()]).enableRLS();
 
 export const insertMaterialTypeSchema = createInsertSchema(materialTypesTable);
 export const insertMaterialStorageLocationSchema = createInsertSchema(materialStorageLocationsTable);

@@ -9,7 +9,9 @@
   },
   "scripts": {
     "push": "drizzle-kit push --config ./drizzle.config.ts",
-    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
+    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
+    "enforce-tenant-rls": "node ./scripts/enforce-tenant-rls.mjs",
+    "test:tenant-rls": "node ./tests/tenant-rls.integration.mjs"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

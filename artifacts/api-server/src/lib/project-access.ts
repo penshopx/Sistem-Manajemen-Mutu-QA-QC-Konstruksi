@@ -1,7 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { clerkClient } from "@clerk/express";
 import {
-  db,
   projectInvitationsTable,
   projectMembershipsTable,
   projectsTable,
@@ -9,6 +8,7 @@ import {
 } from "@workspace/db";
 import { permissionsByRole } from "./rbac";
 import { invitationMembership } from "./project-scope";
+import { withBootstrapContext } from "./tenant-database";
 export { canManageAttachment, canMutate } from "./rbac";
 
 export class ProjectAccessError extends Error {
@@ -24,7 +24,7 @@ export async function ensureProjectAccess(clerkUserId: string) {
   if (!email) throw new ProjectAccessError("Akun harus memiliki alamat email terverifikasi.");
   const name = clerkUser.fullName || clerkUser.firstName || email.split("@")[0];
 
-  return db.transaction(async (tx) => {
+  return withBootstrapContext(async (tx) => {
     let [user] = await tx.select().from(usersTable).where(eq(usersTable.clerkUserId, clerkUserId)).limit(1);
     if (!user) {
       [user] = await tx.insert(usersTable).values({ clerkUserId, name, email }).returning();
