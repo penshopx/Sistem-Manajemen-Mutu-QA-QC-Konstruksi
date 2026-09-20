@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getGetWorkspaceQueryKey } from "@workspace/api-client-react";
-import { ChevronLeft, ChevronRight, Download, FileText, Loader2, Paperclip, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileText, Loader2, Paperclip, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/core";
 
 export type EvidenceAttachment = {
@@ -11,6 +11,9 @@ export type EvidenceAttachment = {
   size: number;
   createdAt: string;
   downloadUrl: string;
+  previewUrl?: string | null;
+  previewStatus: "original" | "ready" | "failed";
+  previewError?: string | null;
 };
 
 type Props = {
@@ -26,7 +29,7 @@ async function responseError(response: Response) {
 
 function isImage(attachment: EvidenceAttachment) {
   return attachment.contentType.startsWith("image/")
-    || /\.(avif|gif|jpe?g|png|webp)$/i.test(attachment.fileName);
+    || /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i.test(attachment.fileName);
 }
 
 function fileSize(size: number) {
@@ -76,7 +79,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
     try {
       const metadata = {
         fileName: file.name,
-        contentType: file.type || "application/octet-stream",
+        contentType: file.type || (/\.(heic|heif)$/i.test(file.name) ? "image/heic" : "application/octet-stream"),
         size: file.size,
       };
       const request = await fetch(`/api/workspace/${collection}/${recordId}/attachments/upload-url`, {
@@ -135,7 +138,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
           ref={inputRef}
           type="file"
           className="hidden"
-          accept=".jpg,.jpeg,.png,.webp,.heic,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
+          accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
           onChange={(event) => {
             const file = event.target.files?.[0];
             if (file) void upload(file);
@@ -157,19 +160,35 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
           {photos.map((attachment, index) => (
             <div key={attachment.id} className="group relative aspect-square overflow-hidden rounded-md border border-border bg-muted">
-              <button
-                type="button"
-                className="h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-                onClick={() => setActivePhoto(index)}
-                aria-label={`Buka foto ${attachment.fileName}`}
-              >
-                <img
-                  src={attachment.downloadUrl}
-                  alt={attachment.fileName}
-                  loading="lazy"
-                  className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                />
-              </button>
+              {attachment.previewStatus === "failed" || !attachment.previewUrl ? (
+                <div className="flex h-full flex-col items-center justify-center gap-1 px-2 text-center text-[9px] text-destructive">
+                  <AlertTriangle className="h-5 w-5" />
+                  <span>Pratinjau gagal dibuat</span>
+                  <span className="line-clamp-2 text-muted-foreground">{attachment.previewError || "File asli tetap dapat diunduh."}</span>
+                  <a
+                    href={attachment.downloadUrl}
+                    download={attachment.fileName}
+                    className="pointer-events-auto mt-1 inline-flex items-center gap-1 rounded bg-background/90 px-2 py-1 text-primary hover:underline"
+                  >
+                    <Download className="h-3 w-3" />
+                    Unduh asli
+                  </a>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                  onClick={() => setActivePhoto(index)}
+                  aria-label={`Buka foto ${attachment.fileName}`}
+                >
+                  <img
+                    src={attachment.previewUrl}
+                    alt={attachment.fileName}
+                    loading="lazy"
+                    className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                  />
+                </button>
+              )}
               <button
                 type="button"
                 aria-label={`Hapus ${attachment.fileName}`}
@@ -247,7 +266,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
           </div>
           <div className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4">
             <img
-              src={photos[activePhoto].downloadUrl}
+              src={photos[activePhoto].previewUrl || undefined}
               alt={photos[activePhoto].fileName}
               className="max-h-full max-w-full object-contain"
             />

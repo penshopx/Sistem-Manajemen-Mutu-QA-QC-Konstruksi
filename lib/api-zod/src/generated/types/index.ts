@@ -10,6 +10,7 @@ export * from './activity';
 export * from './attachment';
 export * from './attachmentInput';
 export * from './attachmentMetadataInput';
+export * from './attachmentPreviewStatus';
 export * from './attachmentUpload';
 export * from './genericRecord';
 export * from './healthStatus';

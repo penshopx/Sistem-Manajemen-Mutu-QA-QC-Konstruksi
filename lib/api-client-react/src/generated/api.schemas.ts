@@ -124,6 +124,15 @@ export interface AttachmentUpload {
   objectPath: string;
 }
 
+export type AttachmentPreviewStatus = typeof AttachmentPreviewStatus[keyof typeof AttachmentPreviewStatus];
+
+
+export const AttachmentPreviewStatus = {
+  original: 'original',
+  ready: 'ready',
+  failed: 'failed',
+} as const;
+
 export interface Attachment {
   id: string;
   fileName: string;
@@ -131,6 +140,11 @@ export interface Attachment {
   size: number;
   createdAt: string;
   downloadUrl: string;
+  /** @nullable */
+  previewUrl?: string | null;
+  previewStatus: AttachmentPreviewStatus;
+  /** @nullable */
+  previewError?: string | null;
 }
 
 export interface Workspace {

@@ -20,6 +20,7 @@ const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/png",
   "image/webp",
   "image/heic",
+  "image/heif",
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -168,6 +169,16 @@ export async function streamAttachment(file: File, res: import("express").Respon
   const [metadata] = await file.getMetadata();
   res.setHeader("Content-Type", metadata.contentType || "application/octet-stream");
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "private, max-age=300");
+  if (metadata.size) res.setHeader("Content-Length", String(metadata.size));
+  file.createReadStream().pipe(res);
+}
+
+export async function streamAttachmentPreview(file: File, res: import("express").Response) {
+  const [metadata] = await file.getMetadata();
+  res.setHeader("Content-Type", metadata.contentType || "application/octet-stream");
+  res.setHeader("Content-Disposition", "inline");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cache-Control", "private, max-age=300");
   if (metadata.size) res.setHeader("Content-Length", String(metadata.size));

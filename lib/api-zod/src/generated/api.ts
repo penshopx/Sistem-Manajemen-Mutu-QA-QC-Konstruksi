@@ -175,7 +175,10 @@ export const CreateRecordAttachmentResponse = zod.object({
   "contentType": zod.string(),
   "size": zod.number().int(),
   "createdAt": zod.coerce.date(),
-  "downloadUrl": zod.string()
+  "downloadUrl": zod.string(),
+  "previewUrl": zod.string().nullish(),
+  "previewStatus": zod.enum(['original', 'ready', 'failed']),
+  "previewError": zod.string().nullish()
 })
 
 
@@ -195,5 +198,14 @@ export const DownloadRecordAttachmentParams = zod.object({
 })
 
 export const DownloadRecordAttachmentResponse = zod.unknown()
+
+
+export const PreviewRecordAttachmentParams = zod.object({
+  "collection": zod.enum(['inspections', 'ncrs']),
+  "id": zod.coerce.string(),
+  "attachmentId": zod.coerce.string().uuid()
+})
+
+export const PreviewRecordAttachmentResponse = zod.unknown()
 
 

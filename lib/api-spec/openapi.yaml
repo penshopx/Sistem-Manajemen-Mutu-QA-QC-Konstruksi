@@ -183,6 +183,27 @@ paths:
             "*/*":
               schema: { type: string, format: binary }
         "404": { description: Attachment not found }
+  /workspace/{collection}/{id}/attachments/{attachmentId}/preview:
+    get:
+      operationId: previewRecordAttachment
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/AttachmentCollection"
+        - $ref: "#/components/parameters/RecordId"
+        - $ref: "#/components/parameters/AttachmentId"
+      responses:
+        "200":
+          description: Browser-compatible attachment preview
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+        "404": { description: Attachment not found }
+        "422": { description: Preview conversion failed }
 components:
   securitySchemes:
     clerkSession:
@@ -315,7 +336,7 @@ components:
         objectPath: { type: string }
     Attachment:
       type: object
-      required: [id, fileName, contentType, size, createdAt, downloadUrl]
+      required: [id, fileName, contentType, size, createdAt, downloadUrl, previewStatus]
       properties:
         id: { type: string, format: uuid }
         fileName: { type: string }
@@ -323,6 +344,11 @@ components:
         size: { type: integer }
         createdAt: { type: string, format: date-time }
         downloadUrl: { type: string }
+        previewUrl: { type: ["string", "null"] }
+        previewStatus:
+          type: string
+          enum: [original, ready, failed]
+        previewError: { type: ["string", "null"] }
     Workspace:
       type: object
       required: [projects, qualityPlans, itps, inspections, ncrs, documents, audits, activities, members, currentUser]

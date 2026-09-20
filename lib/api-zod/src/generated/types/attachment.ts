@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { AttachmentPreviewStatus } from './attachmentPreviewStatus';
 
 export interface Attachment {
   id: string;
@@ -13,4 +14,9 @@ export interface Attachment {
   size: number;
   createdAt: Date;
   downloadUrl: string;
+  /** @nullable */
+  previewUrl?: string | null;
+  previewStatus: AttachmentPreviewStatus;
+  /** @nullable */
+  previewError?: string | null;
 }

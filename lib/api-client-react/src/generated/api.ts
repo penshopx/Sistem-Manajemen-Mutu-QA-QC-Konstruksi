@@ -857,3 +857,91 @@ export function useDownloadRecordAttachment<TData = Awaited<ReturnType<typeof do
 
   return withQueryKey(query, queryOptions.queryKey);
 }
+
+
+
+
+
+
+
+export const getPreviewRecordAttachmentUrl = (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string,) => {
+
+
+
+
+  return `/api/workspace/${collection}/${id}/attachments/${attachmentId}/preview`
+}
+
+export const previewRecordAttachment = async (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: Parameters<typeof customFetch>[1]): Promise<Blob> => {
+
+  return customFetch<Blob>(getPreviewRecordAttachmentUrl(collection,id,attachmentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getPreviewRecordAttachmentQueryKey = (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string,) => {
+    return [
+    `/api/workspace/${collection}/${id}/attachments/${attachmentId}/preview`
+    ] as const;
+    }
+
+
+export const getPreviewRecordAttachmentQueryOptions = <TData = Awaited<ReturnType<typeof previewRecordAttachment>>, TError = ErrorType<void>>(collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof previewRecordAttachment>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getPreviewRecordAttachmentQueryKey(collection,id,attachmentId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof previewRecordAttachment>>> = ({ signal }) => previewRecordAttachment(collection,id,attachmentId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: collection !== null && collection !== undefined && id !== null && id !== undefined && attachmentId !== null && attachmentId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof previewRecordAttachment>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type PreviewRecordAttachmentQueryResult = NonNullable<Awaited<ReturnType<typeof previewRecordAttachment>>>
+export type PreviewRecordAttachmentQueryError = ErrorType<void>
+
+
+
+export function usePreviewRecordAttachment<TData = Awaited<ReturnType<typeof previewRecordAttachment>>, TError = ErrorType<void>>(
+ collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof previewRecordAttachment>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getPreviewRecordAttachmentQueryOptions(collection,id,attachmentId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
