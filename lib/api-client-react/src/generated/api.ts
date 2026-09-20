@@ -20,6 +20,10 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  Attachment,
+  AttachmentInput,
+  AttachmentMetadataInput,
+  AttachmentUpload,
   GenericRecord,
   HealthStatus,
   ProjectInvitationInput,
@@ -537,3 +541,319 @@ export const useInviteProjectMember = <TError = ErrorType<void>,
       return useMutation(getInviteProjectMemberMutationOptions(options));
     }
 
+export const getRequestRecordAttachmentUploadUrl = (collection: 'inspections' | 'ncrs',
+    id: string,) => {
+
+
+
+
+  return `/api/workspace/${collection}/${id}/attachments/upload-url`
+}
+
+export const requestRecordAttachmentUpload = async (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentInput: AttachmentInput, options?: Parameters<typeof customFetch>[1]): Promise<AttachmentUpload> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<AttachmentUpload>(getRequestRecordAttachmentUploadUrl(collection,id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(attachmentInput)
+  }
+);}
+
+
+
+
+
+export const getRequestRecordAttachmentUploadMutationKey = () => ['requestRecordAttachmentUpload'] as const;
+
+export const getRequestRecordAttachmentUploadMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestRecordAttachmentUpload>>, TError,RequestRecordAttachmentUploadMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof requestRecordAttachmentUpload>>, TError,RequestRecordAttachmentUploadMutationVariables, TContext> => {
+
+const mutationKey = getRequestRecordAttachmentUploadMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof requestRecordAttachmentUpload>>, RequestRecordAttachmentUploadMutationVariables> = (props) => {
+          const {collection,id,data} = props ?? {};
+
+          return  requestRecordAttachmentUpload(collection,id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RequestRecordAttachmentUploadMutationResult = NonNullable<Awaited<ReturnType<typeof requestRecordAttachmentUpload>>>
+    export type RequestRecordAttachmentUploadMutationBody = BodyType<AttachmentInput>
+    export type RequestRecordAttachmentUploadMutationError = ErrorType<void>
+    export type RequestRecordAttachmentUploadMutationVariables = {collection: 'inspections' | 'ncrs';id: string;data: BodyType<AttachmentInput>}
+
+    export const useRequestRecordAttachmentUpload = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestRecordAttachmentUpload>>, TError,RequestRecordAttachmentUploadMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof requestRecordAttachmentUpload>>,
+        TError,
+        RequestRecordAttachmentUploadMutationVariables,
+        TContext
+      > => {
+      return useMutation(getRequestRecordAttachmentUploadMutationOptions(options));
+    }
+
+export const getCreateRecordAttachmentUrl = (collection: 'inspections' | 'ncrs',
+    id: string,) => {
+
+
+
+
+  return `/api/workspace/${collection}/${id}/attachments`
+}
+
+export const createRecordAttachment = async (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentMetadataInput: AttachmentMetadataInput, options?: Parameters<typeof customFetch>[1]): Promise<Attachment> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<Attachment>(getCreateRecordAttachmentUrl(collection,id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(attachmentMetadataInput)
+  }
+);}
+
+
+
+
+
+export const getCreateRecordAttachmentMutationKey = () => ['createRecordAttachment'] as const;
+
+export const getCreateRecordAttachmentMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRecordAttachment>>, TError,CreateRecordAttachmentMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createRecordAttachment>>, TError,CreateRecordAttachmentMutationVariables, TContext> => {
+
+const mutationKey = getCreateRecordAttachmentMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createRecordAttachment>>, CreateRecordAttachmentMutationVariables> = (props) => {
+          const {collection,id,data} = props ?? {};
+
+          return  createRecordAttachment(collection,id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateRecordAttachmentMutationResult = NonNullable<Awaited<ReturnType<typeof createRecordAttachment>>>
+    export type CreateRecordAttachmentMutationBody = BodyType<AttachmentMetadataInput>
+    export type CreateRecordAttachmentMutationError = ErrorType<void>
+    export type CreateRecordAttachmentMutationVariables = {collection: 'inspections' | 'ncrs';id: string;data: BodyType<AttachmentMetadataInput>}
+
+    export const useCreateRecordAttachment = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRecordAttachment>>, TError,CreateRecordAttachmentMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createRecordAttachment>>,
+        TError,
+        CreateRecordAttachmentMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateRecordAttachmentMutationOptions(options));
+    }
+
+export const getDeleteRecordAttachmentUrl = (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string,) => {
+
+
+
+
+  return `/api/workspace/${collection}/${id}/attachments/${attachmentId}`
+}
+
+export const deleteRecordAttachment = async (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: Parameters<typeof customFetch>[1]): Promise<void> => {
+
+  return customFetch<void>(getDeleteRecordAttachmentUrl(collection,id,attachmentId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteRecordAttachmentMutationKey = () => ['deleteRecordAttachment'] as const;
+
+export const getDeleteRecordAttachmentMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordAttachment>>, TError,DeleteRecordAttachmentMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteRecordAttachment>>, TError,DeleteRecordAttachmentMutationVariables, TContext> => {
+
+const mutationKey = getDeleteRecordAttachmentMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteRecordAttachment>>, DeleteRecordAttachmentMutationVariables> = (props) => {
+          const {collection,id,attachmentId} = props ?? {};
+
+          return  deleteRecordAttachment(collection,id,attachmentId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteRecordAttachmentMutationResult = NonNullable<Awaited<ReturnType<typeof deleteRecordAttachment>>>
+
+    export type DeleteRecordAttachmentMutationError = ErrorType<void>
+    export type DeleteRecordAttachmentMutationVariables = {collection: 'inspections' | 'ncrs';id: string;attachmentId: string}
+
+    export const useDeleteRecordAttachment = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordAttachment>>, TError,DeleteRecordAttachmentMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteRecordAttachment>>,
+        TError,
+        DeleteRecordAttachmentMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteRecordAttachmentMutationOptions(options));
+    }
+
+export const getDownloadRecordAttachmentUrl = (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string,) => {
+
+
+
+
+  return `/api/workspace/${collection}/${id}/attachments/${attachmentId}/content`
+}
+
+export const downloadRecordAttachment = async (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: Parameters<typeof customFetch>[1]): Promise<Blob> => {
+
+  return customFetch<Blob>(getDownloadRecordAttachmentUrl(collection,id,attachmentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getDownloadRecordAttachmentQueryKey = (collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string,) => {
+    return [
+    `/api/workspace/${collection}/${id}/attachments/${attachmentId}/content`
+    ] as const;
+    }
+
+
+export const getDownloadRecordAttachmentQueryOptions = <TData = Awaited<ReturnType<typeof downloadRecordAttachment>>, TError = ErrorType<void>>(collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof downloadRecordAttachment>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getDownloadRecordAttachmentQueryKey(collection,id,attachmentId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof downloadRecordAttachment>>> = ({ signal }) => downloadRecordAttachment(collection,id,attachmentId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: collection !== null && collection !== undefined && id !== null && id !== undefined && attachmentId !== null && attachmentId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof downloadRecordAttachment>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type DownloadRecordAttachmentQueryResult = NonNullable<Awaited<ReturnType<typeof downloadRecordAttachment>>>
+export type DownloadRecordAttachmentQueryError = ErrorType<void>
+
+
+
+export function useDownloadRecordAttachment<TData = Awaited<ReturnType<typeof downloadRecordAttachment>>, TError = ErrorType<void>>(
+ collection: 'inspections' | 'ncrs',
+    id: string,
+    attachmentId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof downloadRecordAttachment>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getDownloadRecordAttachmentQueryOptions(collection,id,attachmentId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}

@@ -7,15 +7,24 @@ import {
   projectInvitationsTable,
   projectMembershipsTable,
   qaqcRecordsTable,
+  recordAttachmentsTable,
   usersTable,
 } from "@workspace/db";
 import {
   CreateWorkspaceRecordBody,
   CreateWorkspaceRecordParams,
+  CreateRecordAttachmentBody,
+  CreateRecordAttachmentParams,
+  CreateRecordAttachmentResponse,
   DeleteWorkspaceRecordParams,
+  DeleteRecordAttachmentParams,
+  DownloadRecordAttachmentParams,
   GetWorkspaceResponse,
   InviteProjectMemberBody,
   InviteProjectMemberResponse,
+  RequestRecordAttachmentUploadBody,
+  RequestRecordAttachmentUploadParams,
+  RequestRecordAttachmentUploadResponse,
   UpdateWorkspaceRecordBody,
   UpdateWorkspaceRecordParams,
   UpdateWorkspaceRecordResponse,
@@ -23,10 +32,18 @@ import {
 import { requireAuth } from "../middlewares/auth";
 import {
   canMutate,
+  canManageAttachment,
   ensureProjectAccess,
   ProjectAccessError,
   type ProjectAccess,
 } from "../lib/project-access";
+import {
+  attachmentObject,
+  createAttachmentUploadUrl,
+  isAllowedAttachmentType,
+  MAX_ATTACHMENT_SIZE,
+  streamAttachment,
+} from "../lib/object-storage";
 
 const router: IRouter = Router();
 router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => {
@@ -51,6 +68,9 @@ router.get("/workspace", async (req, res): Promise<void> => {
   const records = await db.select().from(qaqcRecordsTable)
     .where(eq(qaqcRecordsTable.projectId, access.project.id))
     .orderBy(desc(qaqcRecordsTable.updatedAt));
+  const attachments = await db.select().from(recordAttachmentsTable)
+    .where(eq(recordAttachmentsTable.projectId, access.project.id))
+    .orderBy(desc(recordAttachmentsTable.createdAt));
   const events = await db.select({
     id: auditEventsTable.id,
     action: auditEventsTable.action,
@@ -78,7 +98,24 @@ router.get("/workspace", async (req, res): Promise<void> => {
   const grouped: Record<string, Record<string, unknown>[]> = {
     qualityPlans: [], itps: [], inspections: [], ncrs: [], documents: [], audits: [],
   };
-  for (const record of records) grouped[record.type].push({ ...record.data, id: record.id });
+  for (const record of records) {
+    const recordAttachments = attachments
+      .filter((attachment) => attachment.recordId === record.id && attachment.recordType === record.type)
+      .map((attachment) => ({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        createdAt: attachment.createdAt.toISOString(),
+        downloadUrl: `/api/workspace/${record.type}/${record.id}/attachments/${attachment.id}/content`,
+      }));
+    grouped[record.type].push({
+      ...record.data,
+      id: record.id,
+      attachments: recordAttachments,
+      evidenceCount: recordAttachments.length,
+    });
+  }
 
   res.json(GetWorkspaceResponse.parse({
     projects: [access.project],
@@ -142,6 +179,167 @@ router.post("/workspace/invitations", async (req, res): Promise<void> => {
     role: invitation.role,
     status: "invited",
   }));
+});
+
+async function recordExists(projectId: string, collection: "inspections" | "ncrs", id: string) {
+  const [record] = await db.select({ id: qaqcRecordsTable.id }).from(qaqcRecordsTable).where(and(
+    eq(qaqcRecordsTable.id, id),
+    eq(qaqcRecordsTable.projectId, projectId),
+    eq(qaqcRecordsTable.type, collection),
+  )).limit(1);
+  return Boolean(record);
+}
+
+router.post("/workspace/:collection/:id/attachments/upload-url", async (req, res): Promise<void> => {
+  const params = RequestRecordAttachmentUploadParams.safeParse(req.params);
+  const body = RequestRecordAttachmentUploadBody.safeParse(req.body);
+  if (!params.success || !body.success) {
+    res.status(400).json({ error: "Metadata file tidak valid atau melebihi batas 25 MB." });
+    return;
+  }
+  const access = res.locals.projectAccess as ProjectAccess;
+  if (!canManageAttachment(access.membership.role, params.data.collection, "add")) {
+    res.status(403).json({ error: "Peran Anda tidak memiliki izin menambah bukti." });
+    return;
+  }
+  if (!isAllowedAttachmentType(body.data.contentType)) {
+    res.status(400).json({ error: "Jenis file ini tidak diizinkan." });
+    return;
+  }
+  if (!await recordExists(access.project.id, params.data.collection, params.data.id)) {
+    res.status(404).json({ error: "Record tidak ditemukan." });
+    return;
+  }
+  const upload = await createAttachmentUploadUrl();
+  res.json(RequestRecordAttachmentUploadResponse.parse(upload));
+});
+
+router.post("/workspace/:collection/:id/attachments", async (req, res): Promise<void> => {
+  const params = CreateRecordAttachmentParams.safeParse(req.params);
+  const body = CreateRecordAttachmentBody.safeParse(req.body);
+  if (!params.success || !body.success) {
+    res.status(400).json({ error: "Metadata lampiran tidak valid." });
+    return;
+  }
+  const access = res.locals.projectAccess as ProjectAccess;
+  if (!canManageAttachment(access.membership.role, params.data.collection, "add")) {
+    res.status(403).json({ error: "Peran Anda tidak memiliki izin menambah bukti." });
+    return;
+  }
+  if (!await recordExists(access.project.id, params.data.collection, params.data.id)) {
+    res.status(404).json({ error: "Record tidak ditemukan." });
+    return;
+  }
+  const object = attachmentObject(body.data.objectPath);
+  const [exists] = await object.exists();
+  if (!exists) {
+    res.status(404).json({ error: "File unggahan tidak ditemukan di storage." });
+    return;
+  }
+  const [objectMetadata] = await object.getMetadata();
+  const actualSize = Number(objectMetadata.size);
+  const actualContentType = String(objectMetadata.contentType || "application/octet-stream").toLowerCase();
+  if (
+    !Number.isSafeInteger(actualSize) ||
+    actualSize < 1 ||
+    actualSize > MAX_ATTACHMENT_SIZE ||
+    actualSize !== body.data.size ||
+    actualContentType !== body.data.contentType.toLowerCase() ||
+    !isAllowedAttachmentType(actualContentType)
+  ) {
+    await object.delete({ ignoreNotFound: true });
+    res.status(400).json({ error: "Isi file tidak sesuai metadata atau melebihi batas 25 MB." });
+    return;
+  }
+  const [attachment] = await db.transaction(async (tx) => {
+    const inserted = await tx.insert(recordAttachmentsTable).values({
+      projectId: access.project.id,
+      recordId: params.data.id,
+      recordType: params.data.collection,
+      objectPath: body.data.objectPath,
+      fileName: body.data.fileName,
+      contentType: actualContentType,
+      size: actualSize,
+      uploadedBy: access.user.id,
+    }).returning();
+    await tx.insert(auditEventsTable).values({
+      projectId: access.project.id,
+      actorUserId: access.user.id,
+      recordType: params.data.collection,
+      recordId: params.data.id,
+      action: "Added evidence",
+      subject: body.data.fileName,
+      after: { attachmentId: inserted[0].id, fileName: body.data.fileName, size: body.data.size },
+    });
+    return inserted;
+  });
+  res.status(201).json(CreateRecordAttachmentResponse.parse({
+    id: attachment.id,
+    fileName: attachment.fileName,
+    contentType: attachment.contentType,
+    size: attachment.size,
+    createdAt: attachment.createdAt.toISOString(),
+    downloadUrl: `/api/workspace/${attachment.recordType}/${attachment.recordId}/attachments/${attachment.id}/content`,
+  }));
+});
+
+router.get("/workspace/:collection/:id/attachments/:attachmentId/content", async (req, res): Promise<void> => {
+  const params = DownloadRecordAttachmentParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Parameter lampiran tidak valid." });
+    return;
+  }
+  const access = res.locals.projectAccess as ProjectAccess;
+  const [attachment] = await db.select().from(recordAttachmentsTable).where(and(
+    eq(recordAttachmentsTable.id, params.data.attachmentId),
+    eq(recordAttachmentsTable.projectId, access.project.id),
+    eq(recordAttachmentsTable.recordId, params.data.id),
+    eq(recordAttachmentsTable.recordType, params.data.collection),
+  )).limit(1);
+  if (!attachment) {
+    res.status(404).json({ error: "Lampiran tidak ditemukan." });
+    return;
+  }
+  await streamAttachment(attachmentObject(attachment.objectPath), res, attachment.fileName);
+});
+
+router.delete("/workspace/:collection/:id/attachments/:attachmentId", async (req, res): Promise<void> => {
+  const params = DeleteRecordAttachmentParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Parameter lampiran tidak valid." });
+    return;
+  }
+  const access = res.locals.projectAccess as ProjectAccess;
+  if (!canManageAttachment(access.membership.role, params.data.collection, "delete")) {
+    res.status(403).json({ error: "Peran Anda tidak memiliki izin menghapus bukti." });
+    return;
+  }
+  const attachment = await db.transaction(async (tx) => {
+    const [existing] = await tx.select().from(recordAttachmentsTable).where(and(
+      eq(recordAttachmentsTable.id, params.data.attachmentId),
+      eq(recordAttachmentsTable.projectId, access.project.id),
+      eq(recordAttachmentsTable.recordId, params.data.id),
+      eq(recordAttachmentsTable.recordType, params.data.collection),
+    )).limit(1);
+    if (!existing) return null;
+    await tx.delete(recordAttachmentsTable).where(eq(recordAttachmentsTable.id, existing.id));
+    await tx.insert(auditEventsTable).values({
+      projectId: access.project.id,
+      actorUserId: access.user.id,
+      recordType: params.data.collection,
+      recordId: params.data.id,
+      action: "Deleted evidence",
+      subject: existing.fileName,
+      before: { attachmentId: existing.id, fileName: existing.fileName, size: existing.size },
+    });
+    return existing;
+  });
+  if (!attachment) {
+    res.status(404).json({ error: "Lampiran tidak ditemukan." });
+    return;
+  }
+  await attachmentObject(attachment.objectPath).delete({ ignoreNotFound: true });
+  res.sendStatus(204);
 });
 
 router.post("/workspace/:collection", async (req, res): Promise<void> => {

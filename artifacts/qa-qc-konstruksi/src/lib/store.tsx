@@ -8,12 +8,13 @@ import {
   useInviteProjectMember,
   useUpdateWorkspaceRecord,
 } from "@workspace/api-client-react";
+import type { EvidenceAttachment } from "@/components/EvidenceAttachments";
 
 export type Project = { id: string; name: string; code: string; client: string; contractor: string; progress: number; qualityScore: number; status: string };
 export type QualityPlan = { id: string; title: string; revision: string; status: string; approvedBy: string; updatedAt: string };
 export type ITP = { id: string; activity: string; holdPoint: boolean; method: string; acceptanceCriteria: string; status: string };
-export type Inspection = { id: string; type: string; reference: string; activity: string; location: string; inspector: string; date: string; status: string; testResult: string; evidenceCount: number };
-export type NCR = { id: string; number: string; finding: string; severity: "Low" | "Medium" | "High" | "Critical"; owner: string; dueDate: string; status: "Open" | "In Review" | "Closed"; rootCause: string; correctiveAction: string };
+export type Inspection = { id: string; type: string; reference: string; activity: string; location: string; inspector: string; date: string; status: string; testResult: string; evidenceCount: number; attachments?: EvidenceAttachment[] };
+export type NCR = { id: string; number: string; finding: string; severity: "Low" | "Medium" | "High" | "Critical"; owner: string; dueDate: string; status: "Open" | "In Review" | "Closed"; rootCause: string; correctiveAction: string; attachments?: EvidenceAttachment[] };
 export type Document = { id: string; code: string; title: string; category: string; revision: string; owner: string; status: string; updatedAt: string };
 export type Audit = { id: string; title: string; date: string; auditor: string; findings: number; closed: number; status: string };
 export type Activity = { id: string; action: string; subject: string; actor: string; timestamp: string };

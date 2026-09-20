@@ -14,7 +14,7 @@ await writeFile(entry, `
     CreateWorkspaceRecordBody,
     GetWorkspaceResponse,
   } from "${path.resolve("../../lib/api-zod/src/generated/api.ts").replaceAll("\\", "/")}";
-  export { canMutate } from "${path.resolve("src/lib/rbac.ts").replaceAll("\\", "/")}";
+   export { canManageAttachment, canMutate } from "${path.resolve("src/lib/rbac.ts").replaceAll("\\", "/")}";
 `);
 
 await build({
@@ -28,6 +28,7 @@ await build({
 const {
   CreateWorkspaceRecordBody,
   GetWorkspaceResponse,
+  canManageAttachment,
   canMutate,
 } = await import(pathToFileURL(output).href);
 
@@ -74,5 +75,11 @@ assert.equal(canMutate("QC_INSPECTOR", "inspections", "create"), true);
 assert.equal(canMutate("QC_INSPECTOR", "documents", "create"), false);
 assert.equal(canMutate("SITE_MANAGER", "ncrs", "update"), true);
 assert.equal(canMutate("PROJECT_MANAGER", "ncrs", "update"), false);
+assert.equal(canManageAttachment("QA_ENGINEER", "inspections", "delete"), true);
+assert.equal(canManageAttachment("QC_INSPECTOR", "inspections", "add"), true);
+assert.equal(canManageAttachment("QC_INSPECTOR", "inspections", "delete"), false);
+assert.equal(canManageAttachment("SITE_MANAGER", "ncrs", "add"), true);
+assert.equal(canManageAttachment("PROJECT_MANAGER", "ncrs", "add"), false);
+assert.equal(canManageAttachment("PROJECT_MANAGER", "ncrs", "delete"), false);
 
 console.info("Workspace contract and RBAC checks passed.");

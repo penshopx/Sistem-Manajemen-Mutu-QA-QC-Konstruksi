@@ -13,3 +13,11 @@ export function canMutate(role: ProjectRole, collection: string, action: "create
   if (role === "SITE_MANAGER") return action === "update";
   return action !== "delete" && (collection === "inspections" || collection === "ncrs");
 }
+
+export function canManageAttachment(
+  role: ProjectRole,
+  collection: "inspections" | "ncrs",
+  action: "add" | "delete",
+): boolean {
+  return canMutate(role, collection, action === "add" ? "update" : "delete");
+}

@@ -99,6 +99,25 @@ export const qaqcRecordsTable = pgTable(
   ],
 );
 
+export const recordAttachmentsTable = pgTable(
+  "qaqc_record_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id").notNull().references(() => projectsTable.id, { onDelete: "cascade" }),
+    recordId: text("record_id").notNull().references(() => qaqcRecordsTable.id, { onDelete: "cascade" }),
+    recordType: recordTypeEnum("record_type").notNull(),
+    objectPath: text("object_path").notNull().unique(),
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    size: integer("size").notNull(),
+    uploadedBy: uuid("uploaded_by").notNull().references(() => usersTable.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("qaqc_attachments_project_record_idx").on(table.projectId, table.recordType, table.recordId),
+  ],
+);
+
 export const auditEventsTable = pgTable(
   "audit_events",
   {
@@ -121,3 +140,4 @@ export const insertQaqcRecordSchema = createInsertSchema(qaqcRecordsTable).omit(
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projectsTable.$inferSelect;
 export type QaqcRecord = typeof qaqcRecordsTable.$inferSelect;
+export type RecordAttachment = typeof recordAttachmentsTable.$inferSelect;

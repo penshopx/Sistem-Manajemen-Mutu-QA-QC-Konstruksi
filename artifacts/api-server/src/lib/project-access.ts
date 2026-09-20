@@ -8,7 +8,7 @@ import {
   usersTable,
 } from "@workspace/db";
 import { permissionsByRole } from "./rbac";
-export { canMutate } from "./rbac";
+export { canManageAttachment, canMutate } from "./rbac";
 
 export class ProjectAccessError extends Error {
   constructor(message = "Akun Anda belum diundang ke proyek ini.") {

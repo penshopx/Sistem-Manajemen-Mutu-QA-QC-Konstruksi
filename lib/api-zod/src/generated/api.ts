@@ -122,3 +122,78 @@ export const InviteProjectMemberResponse = zod.object({
 })
 
 
+export const RequestRecordAttachmentUploadParams = zod.object({
+  "collection": zod.enum(['inspections', 'ncrs']),
+  "id": zod.coerce.string()
+})
+
+export const requestRecordAttachmentUploadBodyFileNameMax = 255;
+
+export const requestRecordAttachmentUploadBodyContentTypeMax = 255;
+
+export const requestRecordAttachmentUploadBodySizeMax = 26214400;
+
+
+
+export const RequestRecordAttachmentUploadBody = zod.object({
+  "fileName": zod.string().min(1).max(requestRecordAttachmentUploadBodyFileNameMax),
+  "contentType": zod.string().min(1).max(requestRecordAttachmentUploadBodyContentTypeMax),
+  "size": zod.number().int().min(1).max(requestRecordAttachmentUploadBodySizeMax)
+})
+
+export const RequestRecordAttachmentUploadResponse = zod.object({
+  "uploadURL": zod.string().url(),
+  "objectPath": zod.string()
+})
+
+
+export const CreateRecordAttachmentParams = zod.object({
+  "collection": zod.enum(['inspections', 'ncrs']),
+  "id": zod.coerce.string()
+})
+
+export const createRecordAttachmentBodyOneFileNameMax = 255;
+
+export const createRecordAttachmentBodyOneContentTypeMax = 255;
+
+export const createRecordAttachmentBodyOneSizeMax = 26214400;
+
+export const createRecordAttachmentBodyTwoObjectPathRegExp = new RegExp('^/objects/uploads/[a-f0-9-]+$');
+
+
+export const CreateRecordAttachmentBody = zod.object({
+  "fileName": zod.string().min(1).max(createRecordAttachmentBodyOneFileNameMax),
+  "contentType": zod.string().min(1).max(createRecordAttachmentBodyOneContentTypeMax),
+  "size": zod.number().int().min(1).max(createRecordAttachmentBodyOneSizeMax)
+}).and(zod.object({
+  "objectPath": zod.string().regex(createRecordAttachmentBodyTwoObjectPathRegExp)
+}))
+
+export const CreateRecordAttachmentResponse = zod.object({
+  "id": zod.string().uuid(),
+  "fileName": zod.string(),
+  "contentType": zod.string(),
+  "size": zod.number().int(),
+  "createdAt": zod.coerce.date(),
+  "downloadUrl": zod.string()
+})
+
+
+export const DeleteRecordAttachmentParams = zod.object({
+  "collection": zod.enum(['inspections', 'ncrs']),
+  "id": zod.coerce.string(),
+  "attachmentId": zod.coerce.string().uuid()
+})
+
+export const DeleteRecordAttachmentResponse = zod.void()
+
+
+export const DownloadRecordAttachmentParams = zod.object({
+  "collection": zod.enum(['inspections', 'ncrs']),
+  "id": zod.coerce.string(),
+  "attachmentId": zod.coerce.string().uuid()
+})
+
+export const DownloadRecordAttachmentResponse = zod.unknown()
+
+

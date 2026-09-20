@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useStore, NCR } from "@/lib/store";
 import { Card, CardContent, CardHeader, CardTitle, Button, Input, Badge, Modal } from "@/components/ui/core";
 import { Plus, Search, AlertOctagon } from "lucide-react";
+import { EvidenceAttachments } from "@/components/EvidenceAttachments";
 
 export function NCRPage() {
   const { state, addRecord, updateRecord, deleteRecord } = useStore();
@@ -127,6 +128,7 @@ export function NCRPage() {
                     <td className="px-6 py-4">
                       <div className="font-medium line-clamp-2">{ncr.finding}</div>
                       <div className="text-xs text-muted-foreground mt-1 line-clamp-1">CAPA: {ncr.correctiveAction}</div>
+                       <EvidenceAttachments collection="ncrs" recordId={ncr.id} attachments={ncr.attachments} />
                     </td>
                     <td className="px-6 py-4">
                       <div>{ncr.owner}</div>

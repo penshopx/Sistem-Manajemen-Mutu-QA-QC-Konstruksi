@@ -7,6 +7,10 @@
  */
 
 export * from './activity';
+export * from './attachment';
+export * from './attachmentInput';
+export * from './attachmentMetadataInput';
+export * from './attachmentUpload';
 export * from './genericRecord';
 export * from './healthStatus';
 export * from './project';

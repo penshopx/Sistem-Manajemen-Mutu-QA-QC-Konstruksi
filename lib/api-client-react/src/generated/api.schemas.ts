@@ -96,6 +96,43 @@ export interface ProjectInvitationInput {
   role: ProjectInvitationInputRole;
 }
 
+export interface AttachmentInput {
+  /**
+     * @minLength 1
+     * @maxLength 255
+     */
+  fileName: string;
+  /**
+     * @minLength 1
+     * @maxLength 255
+     */
+  contentType: string;
+  /**
+     * @minimum 1
+     * @maximum 26214400
+     */
+  size: number;
+}
+
+export type AttachmentMetadataInput = AttachmentInput & {
+  /** @pattern ^/objects/uploads/[a-f0-9-]+$ */
+  objectPath: string;
+};
+
+export interface AttachmentUpload {
+  uploadURL: string;
+  objectPath: string;
+}
+
+export interface Attachment {
+  id: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  createdAt: string;
+  downloadUrl: string;
+}
+
 export interface Workspace {
   projects: Project[];
   qualityPlans: GenericRecord[];

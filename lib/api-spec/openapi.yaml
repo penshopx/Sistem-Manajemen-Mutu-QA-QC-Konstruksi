@@ -111,6 +111,78 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProjectMember" }
         "403": { description: Only QA Engineers can invite members }
+  /workspace/{collection}/{id}/attachments/upload-url:
+    post:
+      operationId: requestRecordAttachmentUpload
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/AttachmentCollection"
+        - $ref: "#/components/parameters/RecordId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttachmentInput" }
+      responses:
+        "200":
+          description: Direct upload URL
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttachmentUpload" }
+        "403": { description: Not a project member }
+        "404": { description: Record not found }
+  /workspace/{collection}/{id}/attachments:
+    post:
+      operationId: createRecordAttachment
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/AttachmentCollection"
+        - $ref: "#/components/parameters/RecordId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttachmentMetadataInput" }
+      responses:
+        "201":
+          description: Attachment metadata saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attachment" }
+        "404": { description: Record or object not found }
+        "400": { description: Stored object does not match allowed metadata }
+        "403": { description: Insufficient role }
+  /workspace/{collection}/{id}/attachments/{attachmentId}:
+    delete:
+      operationId: deleteRecordAttachment
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/AttachmentCollection"
+        - $ref: "#/components/parameters/RecordId"
+        - $ref: "#/components/parameters/AttachmentId"
+      responses:
+        "204": { description: Attachment deleted }
+        "403": { description: Insufficient role }
+        "404": { description: Attachment not found }
+  /workspace/{collection}/{id}/attachments/{attachmentId}/content:
+    get:
+      operationId: downloadRecordAttachment
+      tags: [workspace]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/AttachmentCollection"
+        - $ref: "#/components/parameters/RecordId"
+        - $ref: "#/components/parameters/AttachmentId"
+      responses:
+        "200":
+          description: Attachment content
+          content:
+            "*/*":
+              schema: { type: string, format: binary }
+        "404": { description: Attachment not found }
 components:
   securitySchemes:
     clerkSession:
@@ -130,6 +202,18 @@ components:
       in: path
       required: true
       schema: { type: string }
+    AttachmentCollection:
+      name: collection
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [inspections, ncrs]
+    AttachmentId:
+      name: attachmentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
   schemas:
     HealthStatus:
       type: object
@@ -209,6 +293,36 @@ components:
         role:
           type: string
           enum: [QA_ENGINEER, QC_INSPECTOR, SITE_MANAGER, PROJECT_MANAGER]
+    AttachmentInput:
+      type: object
+      required: [fileName, contentType, size]
+      properties:
+        fileName: { type: string, minLength: 1, maxLength: 255 }
+        contentType: { type: string, minLength: 1, maxLength: 255 }
+        size: { type: integer, minimum: 1, maximum: 26214400 }
+    AttachmentMetadataInput:
+      allOf:
+        - $ref: "#/components/schemas/AttachmentInput"
+        - type: object
+          required: [objectPath]
+          properties:
+            objectPath: { type: string, pattern: "^/objects/uploads/[a-f0-9-]+$" }
+    AttachmentUpload:
+      type: object
+      required: [uploadURL, objectPath]
+      properties:
+        uploadURL: { type: string, format: uri }
+        objectPath: { type: string }
+    Attachment:
+      type: object
+      required: [id, fileName, contentType, size, createdAt, downloadUrl]
+      properties:
+        id: { type: string, format: uuid }
+        fileName: { type: string }
+        contentType: { type: string }
+        size: { type: integer }
+        createdAt: { type: string, format: date-time }
+        downloadUrl: { type: string }
     Workspace:
       type: object
       required: [projects, qualityPlans, itps, inspections, ncrs, documents, audits, activities, members, currentUser]

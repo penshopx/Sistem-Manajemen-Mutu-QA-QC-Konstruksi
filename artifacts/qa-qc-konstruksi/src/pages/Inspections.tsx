@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useStore, Inspection } from "@/lib/store";
 import { Card, CardContent, CardHeader, CardTitle, Button, Input, Badge, Modal } from "@/components/ui/core";
 import { Plus, Search, MapPin } from "lucide-react";
+import { EvidenceAttachments } from "@/components/EvidenceAttachments";
 
 export function Inspections() {
   const { state, addRecord, updateRecord, deleteRecord } = useStore();
@@ -33,7 +34,8 @@ export function Inspections() {
       date: new Date().toISOString(),
       status: formData.status || "Pending",
       testResult: formData.testResult || "-",
-      evidenceCount: Math.floor(Math.random() * 5)
+      evidenceCount: 0,
+      attachments: [],
     } as Inspection);
     
     setIsAddModalOpen(false);
@@ -92,7 +94,7 @@ export function Inspections() {
                     </td>
                     <td className="px-6 py-4 text-muted-foreground text-sm">
                       {insp.testResult}
-                      {insp.evidenceCount > 0 && <div className="text-[10px] text-primary mt-1">{insp.evidenceCount} photos attached</div>}
+                      <EvidenceAttachments collection="inspections" recordId={insp.id} attachments={insp.attachments} />
                     </td>
                     <td className="px-6 py-4">
                       <select 
