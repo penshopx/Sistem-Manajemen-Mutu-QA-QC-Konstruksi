@@ -1,12 +1,16 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EvidenceAttachments,
   type EvidenceAttachment,
 } from "./EvidenceAttachments";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 const attachments: EvidenceAttachment[] = [
   {
@@ -116,6 +120,61 @@ describe.each([
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Galeri foto bukti" })).toBeNull();
+  });
+
+  it("membatalkan penghapusan tanpa mengirim permintaan", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    renderAttachments(collection);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus pondasi.jpg" }));
+
+    expect(confirm).toHaveBeenCalledWith('Hapus bukti "pondasi.jpg"?');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Buka foto pondasi.jpg" })).toBeTruthy();
+    expect(screen.getByText("4 bukti tersimpan")).toBeTruthy();
+  });
+
+  it("menghapus melalui endpoint rekaman yang tepat dan langsung menyegarkan galeri", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetch);
+    renderAttachments(collection);
+    fireEvent.click(screen.getByRole("button", { name: "Buka foto pengecoran.webp" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus pengecoran.webp" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        `/api/workspace/${collection}/${collection}-record/attachments/photo-3`,
+        { method: "DELETE", credentials: "include" },
+      );
+      expect(screen.queryByRole("button", { name: "Buka foto pengecoran.webp" })).toBeNull();
+    });
+    const dialog = screen.getByRole("dialog", { name: "Galeri foto bukti" });
+    expect(within(dialog).getByText("bekisting.png")).toBeTruthy();
+    expect(within(dialog).getByText("2 dari 2")).toBeTruthy();
+    expect(screen.getByText("3 bukti tersimpan")).toBeTruthy();
+  });
+
+  it("menampilkan kegagalan API tanpa mengubah daftar atau galeri", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: vi.fn().mockResolvedValue({ error: "Layanan penghapusan tidak tersedia." }),
+    }));
+    renderAttachments(collection);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hapus pondasi.jpg" }));
+
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledWith("Layanan penghapusan tidak tersedia.");
+    });
+    expect(screen.getByRole("button", { name: "Buka foto pondasi.jpg" })).toBeTruthy();
+    expect(screen.getByText("4 bukti tersimpan")).toBeTruthy();
   });
 });
 

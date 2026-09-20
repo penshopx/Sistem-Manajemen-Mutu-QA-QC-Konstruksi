@@ -54,9 +54,11 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [activePhoto, setActivePhoto] = useState<number | null>(null);
-  const photos = attachments.filter(isImage);
-  const documents = attachments.filter((attachment) => !isImage(attachment));
-  const hasProcessingPreview = attachments.some(isPendingPreview);
+  const [removedAttachmentIds, setRemovedAttachmentIds] = useState<Set<string>>(() => new Set());
+  const visibleAttachments = attachments.filter((attachment) => !removedAttachmentIds.has(attachment.id));
+  const photos = visibleAttachments.filter(isImage);
+  const documents = visibleAttachments.filter((attachment) => !isImage(attachment));
+  const hasProcessingPreview = visibleAttachments.some(isPendingPreview);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: getGetWorkspaceQueryKey() });
 
@@ -67,6 +69,10 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
     }, 2_000);
     return () => window.clearInterval(interval);
   }, [hasProcessingPreview]);
+
+  useEffect(() => {
+    setRemovedAttachmentIds(new Set());
+  }, [collection, recordId]);
 
   useEffect(() => {
     if (activePhoto === null) return;
@@ -142,6 +148,19 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
         credentials: "include",
       });
       if (!response.ok) throw new Error(await responseError(response));
+      const removedPhotoIndex = photos.findIndex((photo) => photo.id === attachment.id);
+      if (removedPhotoIndex >= 0) {
+        setActivePhoto((current) => {
+          if (current === null) return null;
+          if (current > removedPhotoIndex) return current - 1;
+          if (current === removedPhotoIndex) {
+            const remainingPhotoCount = photos.length - 1;
+            return remainingPhotoCount ? Math.min(current, remainingPhotoCount - 1) : null;
+          }
+          return current;
+        });
+      }
+      setRemovedAttachmentIds((current) => new Set(current).add(attachment.id));
       await refresh();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Gagal menghapus bukti.");
@@ -154,7 +173,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
     <div className="mt-2 min-w-56 space-y-2">
       <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
         <Paperclip className="h-3 w-3" />
-        <span>{attachments.length} bukti tersimpan</span>
+        <span>{visibleAttachments.length} bukti tersimpan</span>
         <input
           ref={inputRef}
           type="file"
