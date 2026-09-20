@@ -65,7 +65,22 @@ const processingAttachment: EvidenceAttachment = {
   previewStatus: "processing",
 };
 
-function renderAttachments(collection: "inspections" | "ncrs") {
+const failedAttachment: EvidenceAttachment = {
+  id: "photo-failed",
+  fileName: "retak-struktur.heic",
+  contentType: "image/heic",
+  size: 2_800_000,
+  createdAt: "2026-09-20T08:05:00.000Z",
+  downloadUrl: "/download/retak-struktur.heic",
+  previewUrl: null,
+  previewStatus: "failed",
+  previewError: "Format pratinjau tidak didukung.",
+};
+
+function renderAttachments(
+  collection: "inspections" | "ncrs",
+  evidence: EvidenceAttachment[] = attachments,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -75,7 +90,7 @@ function renderAttachments(collection: "inspections" | "ncrs") {
       <EvidenceAttachments
         collection={collection}
         recordId={`${collection}-record`}
-        attachments={attachments}
+        attachments={evidence}
       />
     </QueryClientProvider>,
   );
@@ -175,6 +190,34 @@ describe.each([
     });
     expect(screen.getByRole("button", { name: "Buka foto pondasi.jpg" })).toBeTruthy();
     expect(screen.getByText("4 bukti tersimpan")).toBeTruthy();
+  });
+
+  it("menjaga foto tanpa pratinjau dapat diunduh tanpa memasukkannya ke galeri", () => {
+    renderAttachments(collection, [
+      attachments[0],
+      failedAttachment,
+      attachments[2],
+    ]);
+
+    expect(screen.getByText("Pratinjau gagal dibuat")).toBeTruthy();
+    expect(screen.getByText("Format pratinjau tidak didukung.")).toBeTruthy();
+    const originalDownload = screen.getByRole("link", { name: "Unduh asli" });
+    expect(originalDownload.getAttribute("href")).toBe("/download/retak-struktur.heic");
+    expect(originalDownload.getAttribute("download")).toBe("retak-struktur.heic");
+    expect(screen.queryByRole("button", { name: "Buka foto retak-struktur.heic" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Galeri foto bukti" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Buka foto pondasi.jpg" }));
+    const dialog = screen.getByRole("dialog", { name: "Galeri foto bukti" });
+    expect(within(dialog).getByText("1 dari 2")).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Foto berikutnya" }));
+    expect(within(dialog).getByText("bekisting.png")).toBeTruthy();
+    expect(within(dialog).getByText("2 dari 2")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(within(dialog).getByText("pondasi.jpg")).toBeTruthy();
+    expect(within(dialog).queryByText("retak-struktur.heic")).toBeNull();
   });
 });
 

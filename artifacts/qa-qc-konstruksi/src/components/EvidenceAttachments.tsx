@@ -57,6 +57,9 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
   const [removedAttachmentIds, setRemovedAttachmentIds] = useState<Set<string>>(() => new Set());
   const visibleAttachments = attachments.filter((attachment) => !removedAttachmentIds.has(attachment.id));
   const photos = visibleAttachments.filter(isImage);
+  const galleryPhotos = photos.filter(
+    (attachment) => attachment.previewStatus !== "failed" && Boolean(attachment.previewUrl),
+  );
   const documents = visibleAttachments.filter((attachment) => !isImage(attachment));
   const hasProcessingPreview = visibleAttachments.some(isPendingPreview);
 
@@ -80,10 +83,10 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setActivePhoto(null);
       if (event.key === "ArrowLeft") {
-        setActivePhoto((current) => current === null ? null : (current - 1 + photos.length) % photos.length);
+        setActivePhoto((current) => current === null ? null : (current - 1 + galleryPhotos.length) % galleryPhotos.length);
       }
       if (event.key === "ArrowRight") {
-        setActivePhoto((current) => current === null ? null : (current + 1) % photos.length);
+        setActivePhoto((current) => current === null ? null : (current + 1) % galleryPhotos.length);
       }
     };
 
@@ -93,13 +96,13 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
       document.body.style.overflow = "";
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activePhoto, photos.length]);
+  }, [activePhoto, galleryPhotos.length]);
 
   useEffect(() => {
-    if (activePhoto !== null && activePhoto >= photos.length) {
-      setActivePhoto(photos.length ? photos.length - 1 : null);
+    if (activePhoto !== null && activePhoto >= galleryPhotos.length) {
+      setActivePhoto(galleryPhotos.length ? galleryPhotos.length - 1 : null);
     }
-  }, [activePhoto, photos.length]);
+  }, [activePhoto, galleryPhotos.length]);
 
   const upload = async (file: File) => {
     setBusy(true);
@@ -148,13 +151,13 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
         credentials: "include",
       });
       if (!response.ok) throw new Error(await responseError(response));
-      const removedPhotoIndex = photos.findIndex((photo) => photo.id === attachment.id);
+      const removedPhotoIndex = galleryPhotos.findIndex((photo) => photo.id === attachment.id);
       if (removedPhotoIndex >= 0) {
         setActivePhoto((current) => {
           if (current === null) return null;
           if (current > removedPhotoIndex) return current - 1;
           if (current === removedPhotoIndex) {
-            const remainingPhotoCount = photos.length - 1;
+            const remainingPhotoCount = galleryPhotos.length - 1;
             return remainingPhotoCount ? Math.min(current, remainingPhotoCount - 1) : null;
           }
           return current;
@@ -234,7 +237,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
                 <button
                   type="button"
                   className="h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-                  onClick={() => setActivePhoto(index)}
+                  onClick={() => setActivePhoto(galleryPhotos.findIndex((photo) => photo.id === attachment.id))}
                   aria-label={`Buka foto ${attachment.fileName}`}
                 >
                   <img
@@ -285,7 +288,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
           </button>
         </div>
       ))}
-      {activePhoto !== null && photos[activePhoto] && (
+      {activePhoto !== null && galleryPhotos[activePhoto] && (
         <div
           className="fixed inset-0 z-[100] flex flex-col bg-black/95"
           role="dialog"
@@ -297,15 +300,15 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
         >
           <div className="flex items-center justify-between gap-4 px-4 py-3 text-white">
             <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{photos[activePhoto].fileName}</div>
-              <div className="text-xs text-white/60">{activePhoto + 1} dari {photos.length}</div>
+              <div className="truncate text-sm font-medium">{galleryPhotos[activePhoto].fileName}</div>
+              <div className="text-xs text-white/60">{activePhoto + 1} dari {galleryPhotos.length}</div>
             </div>
             <div className="flex items-center gap-1">
               <a
-                href={photos[activePhoto].downloadUrl}
-                download={photos[activePhoto].fileName}
+                href={galleryPhotos[activePhoto].downloadUrl}
+                download={galleryPhotos[activePhoto].fileName}
                 className="rounded-md p-2 text-white/80 hover:bg-white/10 hover:text-white"
-                aria-label={`Unduh ${photos[activePhoto].fileName}`}
+                aria-label={`Unduh ${galleryPhotos[activePhoto].fileName}`}
               >
                 <Download className="h-5 w-5" />
               </a>
@@ -322,16 +325,16 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
           </div>
           <div className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4">
             <img
-              src={photos[activePhoto].previewUrl || undefined}
-              alt={photos[activePhoto].fileName}
+              src={galleryPhotos[activePhoto].previewUrl || undefined}
+              alt={galleryPhotos[activePhoto].fileName}
               className="max-h-full max-w-full object-contain"
             />
-            {photos.length > 1 && (
+            {galleryPhotos.length > 1 && (
               <>
                 <button
                   type="button"
                   className="absolute left-2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 sm:left-4"
-                  onClick={() => setActivePhoto((activePhoto - 1 + photos.length) % photos.length)}
+                  onClick={() => setActivePhoto((activePhoto - 1 + galleryPhotos.length) % galleryPhotos.length)}
                   aria-label="Foto sebelumnya"
                 >
                   <ChevronLeft className="h-7 w-7" />
@@ -339,7 +342,7 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
                 <button
                   type="button"
                   className="absolute right-2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 sm:right-4"
-                  onClick={() => setActivePhoto((activePhoto + 1) % photos.length)}
+                  onClick={() => setActivePhoto((activePhoto + 1) % galleryPhotos.length)}
                   aria-label="Foto berikutnya"
                 >
                   <ChevronRight className="h-7 w-7" />
