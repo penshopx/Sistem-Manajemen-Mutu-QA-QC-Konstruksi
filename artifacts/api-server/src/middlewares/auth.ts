@@ -1,10 +1,7 @@
 import { getAuth } from "@clerk/express";
 import type { NextFunction, Request, Response } from "express";
 
-type AuthResult = {
-  userId?: string | null;
-  sessionClaims?: { userId?: unknown } | null;
-};
+type AuthResult = Partial<Pick<ReturnType<typeof getAuth>, "userId" | "sessionClaims">>;
 
 export function createRequireAuth(readAuth: (req: Request) => AuthResult) {
   return function requireAuth(req: Request, res: Response, next: NextFunction): void {

@@ -1,10 +1,11 @@
+import type { QaqcRecord } from "@workspace/db";
+
 type RecordData = Record<string, unknown>;
-type RecordType = "qualityPlans" | "itps" | "inspections" | "ncrs" | "documents" | "audits";
 
 type AuditContext = {
   projectId: string;
   actorUserId: string;
-  recordType: RecordType;
+  recordType: QaqcRecord["type"];
   recordId: string;
 };
 
