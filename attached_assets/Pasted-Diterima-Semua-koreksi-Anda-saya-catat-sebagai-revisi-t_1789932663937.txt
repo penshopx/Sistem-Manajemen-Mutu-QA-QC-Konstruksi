@@ -1,0 +1,62 @@
+Diterima. Semua koreksi Anda saya catat sebagai revisi terhadap pemahaman saya terhadap kedua dokumen tersebut.
+
+---
+
+## Revisi Pemahaman Acceptance Criteria Task #28
+
+### AC-1 — Logging dibedakan
+- Tidak ada log yang menyatakan **penghapusan object gagal** jika object memang terhapus.
+- **Tetap ada warning terstruktur** bahwa pencatatan observabilitas gagal — kegagalan event tidak boleh disembunyikan.
+
+### AC-2 — Sanitasi berbasis allowlist
+Filter pola diganti dengan pemetaan ke kategori yang diperbolehkan:
+- `STORAGE_TIMEOUT`
+- `STORAGE_UNAVAILABLE`
+- `STORAGE_PERMISSION_DENIED`
+- `STORAGE_QUOTA_EXCEEDED`
+- `UNKNOWN_STORAGE_ERROR`
+
+Database dan API menyimpan pesan publik berdasarkan kategori. Detail mentah hanya masuk log server terkontrol dengan redaksi yang sesuai.
+
+### AC-3 — Keterbatasan localStorage diakui
+- Namespace: `storage-cleanup-notified:{userId}:{projectId}` dengan daftar `uploadId` sebagai nilai.
+- localStorage read–compare–write **tidak dapat menjamin** tidak ada toast ganda dari dua tab.
+- Untuk memenuhi AC "dua notifier aktif", diperlukan salah satu dari: `BroadcastChannel`, koordinasi event `storage`, lock browser, atau deduplikasi server-side.
+- Jika tetap hanya localStorage, AC harus secara eksplisit mengakui sifat **best-effort**.
+- Fallback saat localStorage tidak tersedia: **tidak crash** — bukan jaminan no-duplicate.
+
+### AC-4 — Kontrak recovery di server
+- `recoveredAt` tidak dapat disimpulkan dari rolling 24 jam.
+- Backend harus menetapkan: identitas masalah yang dipulihkan, kapan recovery definitif, apakah satu cleanup sukses cukup, apakah semua upload bermasalah harus pulih, bagaimana status lama kedaluwarsa.
+- Respons parsial **gagal validasi skema**, bukan diterima lalu ditebak sebagai `untrusted`.
+
+### AC-5 — Test berbasis perilaku
+- Tidak mengunci jumlah test.
+- Setiap perilaku kritis memiliki **test deterministik**.
+- "Coverage tidak turun dari baseline" hanya berlaku jika baseline dan alat coverage sudah tersedia.
+
+---
+
+## Revisi Pemahaman Rancangan Retensi (Referensi Task #31)
+
+Saya mengakui beberapa masalah kritis dalam rancangan tersebut:
+
+1. **Cutoff terbalik** — logika `cutoff > operationalWindow ? cutoff : operationalWindow` untuk retensi 30 hari menghasilkan cutoff 24 jam lalu, yang berpotensi menghapus hampir seluruh riwayat. Karena batas minimum sudah 7 hari, jendela 24 jam otomatis terlindungi tanpa perlu logika tambahan.
+2. **Objek yang dipangkas keliru** — rancangan memproses `attachmentUploads` yatim, padahal Task #31 berkaitan dengan **masa simpan riwayat `attachmentCleanupEvents`**. Retensi histori tidak boleh mengubah masa kedaluwarsa upload kecuali kebijakan bisnis secara eksplisit menggabungkan keduanya.
+3. **Nama kolom terlalu umum** — `retentionDays` perlu diganti dengan nama spesifik seperti `cleanupHistoryRetentionDays`.
+4. **Update dan audit tidak atomik** — keduanya perlu dalam satu transaksi tenant-scoped.
+5. **Isolasi dan RBAC masih asumsi** — implementasi aktual harus mengikuti `ensureProjectAccess`, role proyek, tenant transaction context, kontrak OpenAPI, UUID, dan API client hasil codegen.
+6. **Waktu tidak deterministik** — `calculateCutoffTimestamp()` harus menerima parameter `now` untuk boundary test yang stabil.
+7. **Constraint database diperlukan** — validasi API saja tidak cukup; check constraint rentang retensi wajib ada.
+8. **Index pada `retention_days` tidak berguna** — index yang penting berada pada histori cleanup (`project_id`, `created_at`).
+9. **Penghapusan tetap per batch** — Task #31 hanya memasukkan cutoff per proyek ke mekanisme Task #30, bukan menggantinya.
+
+---
+
+## Status Tindakan
+
+- **Tidak ada implementasi atau perubahan kode** yang dilakukan.
+- **Task #31 tidak disentuh** — rancangan retensi hanya menjadi referensi untuk task tersebut.
+- **Task #28** — acceptance criteria yang direvisi siap digunakan sebagai acuan saat remediasi selesai dan review ulang dilakukan.
+
+Silakan beri tahu saya jika ada penyesuaian lebih lanjut atau jika Anda ingin beralih ke topik lain.
