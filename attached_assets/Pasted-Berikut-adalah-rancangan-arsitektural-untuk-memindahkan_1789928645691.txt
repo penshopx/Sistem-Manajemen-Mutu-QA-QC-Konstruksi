@@ -1,0 +1,283 @@
+Berikut adalah rancangan arsitektural untuk memindahkan konversi HEIC ke pemrosesan latar belakang. Rancangan ini **tidak menyentuh logika konversi itu sendiri** (itu domain Task #19), hanya mengubah *cara* konversi dipanggil — dari inline menjadi async.
+
+---
+
+## 1. State Machine untuk Status Preview
+
+Tambahkan state machine yang eksplisit agar UI dan API memiliki kontrak yang jelas:
+
+```
+pending → processing → ready
+                    ↘ failed (setelah retry habis)
+```
+
+- `pending`: Metadata tersimpan, job belum diambil worker.
+- `processing`: Worker sedang mengonversi.
+- `ready`: Preview (JPEG) tersedia.
+- `failed`: Konversi gagal setelah retry — tampilkan file asli.
+
+---
+
+## 2. Skema Database
+
+```typescript
+// lib/db/src/schema/attachments.ts (tambahan)
+export const attachments = pgTable('attachments', {
+  // ... kolom existing ...
+  previewStatus: varchar('preview_status', { length: 20 })
+    .default('pending')
+    .notNull(), // 'pending' | 'processing' | 'ready' | 'failed'
+  previewKey: text('preview_key'),              // key JPEG di object storage
+  previewError: text('preview_error'),          // pesan error terakhir
+  previewAttempts: integer('preview_attempts').default(0).notNull(),
+  previewUpdatedAt: timestamp('preview_updated_at'),
+});
+```
+
+---
+
+## 3. Alur Upload (API Route)
+
+Ubah endpoint upload menjadi **fire-and-forget** untuk konversi:
+
+```typescript
+// artifacts/api-server/src/routes/workspace.ts
+router.post('/projects/:projectId/attachments', requireAuth, async (req, res) => {
+  const { projectId } = req.params;
+  const userId = req.auth.userId;
+  const file = req.file; // dari multer/similar
+
+  // 1. Upload file asli ke object storage (sudah ada)
+  const originalKey = await uploadToStorage(file.buffer, file.originalname);
+
+  // 2. Simpan metadata dengan status 'pending'
+  const [attachment] = await db.insert(attachments).values({
+    projectId,
+    uploadedBy: userId,
+    originalKey,
+    mimeType: file.mimetype,
+    previewStatus: 'pending',
+    previewAttempts: 0,
+  }).returning();
+
+  // 3. Enqueue job konversi (non-blocking)
+  await enqueuePreviewJob({
+    attachmentId: attachment.id,
+    originalKey,
+    mimeType: file.mimetype,
+  });
+
+  // 4. Return segera — UI akan poll status
+  res.status(202).json({
+    id: attachment.id,
+    previewStatus: 'pending',
+    originalUrl: getSignedUrl(originalKey),
+  });
+});
+```
+
+---
+
+## 4. Worker Background
+
+Worker menggunakan job queue yang sudah ada di proyek (pilih salah satu: **BullMQ**, **Graphile Worker**, **pg-boss**, atau custom DB polling). Prinsipnya sama:
+
+```typescript
+// artifacts/api-server/src/workers/preview-conversion.ts
+import { convertHeicToPreview } from '../lib/attachment-preview'; // ← fungsi yang sedang dikerjakan Task #19
+
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [5_000, 30_000, 120_000]; // exponential backoff
+
+export async function processPreviewJob(job: PreviewJob) {
+  const { attachmentId, originalKey, mimeType } = job;
+
+  // 1. Klaim atomik: hanya proses jika status masih 'pending' atau 'processing'
+  const [attachment] = await db.update(attachments)
+    .set({ previewStatus: 'processing' })
+    .where(and(
+      eq(attachments.id, attachmentId),
+      inArray(attachments.previewStatus, ['pending', 'processing']),
+      lt(attachments.previewAttempts, MAX_ATTEMPTS)
+    ))
+    .returning();
+
+  if (!attachment) {
+    // Sudah diproses atau sudah gagal permanen — skip
+    return;
+  }
+
+  try {
+    // 2. Panggil konverter yang sudah ada (tidak diubah logikanya)
+    const previewBuffer = await convertHeicToPreview(originalKey, mimeType);
+    const previewKey = await uploadPreviewToStorage(previewBuffer, attachmentId);
+
+    // 3. Tandai siap
+    await db.update(attachments)
+      .set({
+        previewStatus: 'ready',
+        previewKey,
+        previewUpdatedAt: new Date(),
+      })
+      .where(eq(attachments.id, attachmentId));
+
+  } catch (error) {
+    const attempts = attachment.previewAttempts + 1;
+
+    if (attempts >= MAX_ATTEMPTS) {
+      // Gagal permanen — UI akan tampilkan file asli
+      await db.update(attachments)
+        .set({
+          previewStatus: 'failed',
+          previewError: error.message,
+          previewAttempts: attempts,
+          previewUpdatedAt: new Date(),
+        })
+        .where(eq(attachments.id, attachmentId));
+
+      console.error(`[PreviewWorker] Final failure for attachment ${attachmentId}:`, error.message);
+    } else {
+      // Re-enqueue dengan delay (exponential backoff)
+      await db.update(attachments)
+        .set({
+          previewStatus: 'pending',
+          previewAttempts: attempts,
+          previewError: error.message,
+        })
+        .where(eq(attachments.id, attachmentId));
+
+      await enqueuePreviewJob(job, { delay: RETRY_DELAYS_MS[attempts - 1] });
+    }
+  }
+}
+```
+
+**Catatan penting**: Fungsi `convertHeicToPreview` adalah fungsi yang sedang dikerjakan Task #19. Worker ini hanya *memanggil* fungsi tersebut — tidak mengubah implementasinya.
+
+---
+
+## 5. Endpoint Polling untuk UI
+
+UI perlu endpoint ringan untuk mengecek status preview:
+
+```typescript
+// artifacts/api-server/src/routes/workspace.ts
+router.get('/attachments/:id/preview-status', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.auth.userId;
+
+  const attachment = await db.query.attachments.findFirst({
+    where: and(
+      eq(attachments.id, parseInt(id)),
+      eq(attachments.projectId, req.user.projectId) // isolasi proyek
+    ),
+    columns: ['id', 'previewStatus', 'previewKey', 'previewError'],
+  });
+
+  if (!attachment) return res.status(404).json({ error: 'Not found' });
+
+  res.json({
+    previewStatus: attachment.previewStatus,
+    previewUrl: attachment.previewStatus === 'ready'
+      ? getSignedUrl(attachment.previewKey)
+      : null,
+    error: attachment.previewStatus === 'failed'
+      ? attachment.previewError
+      : null,
+  });
+});
+```
+
+---
+
+## 6. UI State Handling
+
+```tsx
+// artifacts/qa-qc-konstruksi/src/components/EvidenceAttachments.tsx
+function AttachmentThumbnail({ attachment }: { attachment: Attachment }) {
+  const [preview, setPreview] = useState({
+    status: attachment.previewStatus,
+    url: null as string | null,
+  });
+
+  // Polling hanya jika status belum final
+  useEffect(() => {
+    if (preview.status === 'ready' || preview.status === 'failed') return;
+
+    const interval = setInterval(async () => {
+      const res = await fetch(`/api/attachments/${attachment.id}/preview-status`);
+      const data = await res.json();
+      setPreview({ status: data.previewStatus, url: data.previewUrl });
+
+      if (data.previewStatus === 'ready' || data.previewStatus === 'failed') {
+        clearInterval(interval);
+      }
+    }, 2000); // poll setiap 2 detik
+
+    return () => clearInterval(interval);
+  }, [preview.status, attachment.id]);
+
+  // Render berdasarkan status
+  if (preview.status === 'processing' || preview.status === 'pending') {
+    return (
+      <div className="thumbnail placeholder">
+        <Spinner />
+        <span>Memproses pratinjau...</span>
+      </div>
+    );
+  }
+
+  if (preview.status === 'ready' && preview.url) {
+    return <img src={preview.url} alt="" className="thumbnail" />;
+  }
+
+  // Fallback: failed atau non-image — tampilkan file asli
+  return (
+    <div className="thumbnail file-fallback">
+      <FileIcon />
+      <a href={attachment.originalUrl} download>
+        Unduh {attachment.originalName}
+      </a>
+    </div>
+  );
+}
+```
+
+---
+
+## 7. Testing Strategy
+
+### Contract Test (API)
+- Upload file HEIC → response 202 dengan `previewStatus: 'pending'`.
+- Poll endpoint sebelum konversi selesai → `previewStatus: 'processing'`.
+- Poll setelah konversi selesai → `previewStatus: 'ready'` + URL valid.
+- Simulasikan kegagalan konverter → setelah 3 retry, `previewStatus: 'failed'` + file asli tetap bisa diunduh.
+
+### Worker Test
+- Worker memproses job → status berubah `pending → processing → ready`.
+- Worker gagal → retry dengan delay yang benar → setelah 3x gagal, status `failed`.
+- Job untuk attachment yang sudah `ready` di-skip (tidak diproses ulang).
+- Dua worker paralel tidak memproses attachment yang sama (klaim atomik).
+
+### UI Test
+- Thumbnail menampilkan spinner saat status `pending`/`processing`.
+- Thumbnail menampilkan gambar saat status `ready`.
+- Thumbnail menampilkan ikon file + link unduh saat status `failed`.
+- Polling berhenti saat status final.
+
+---
+
+## Ringkasan Keputusan Arsitektural
+
+| Keputusan | Alasan |
+|---|---|
+| State machine eksplisit (`pending/processing/ready/failed`) | Kontrak jelas antara API, worker, dan UI |
+| Klaim atomik di DB | Mencegah dua worker memproses job yang sama |
+| Retry dengan exponential backoff | Tahan terhadap kegagalan sementara (OOM, timeout konverter) |
+| Polling UI (bukan WebSocket) | Lebih sederhana, cukup untuk kasus ini, tidak butuh infrastruktur tambahan |
+| Fallback ke file asli saat gagal | Pengalaman pengguna tidak terputus — bukti tetap bisa diunduh |
+| Tidak menyentuh logika konverter | Tidak bentrok dengan Task #19 (orientasi HEIC) |
+
+---
+
+Apakah Anda ingin saya mendalami salah satu bagian spesifik — misalnya strategi polling yang lebih efisien (menggunakan `Last-Modified` header untuk mengurangi payload), atau desain skema retry yang lebih detail untuk job queue tertentu yang dipakai di proyek?
