@@ -1,0 +1,381 @@
+Berikut implementasi lengkap untuk mencegah tabel baru terlewat dari perlindungan isolasi tenant.
+
+---
+
+## 1. Script Enforcement
+
+```javascript
+// lib/db/scripts/enforce-tenant-rls.mjs
+/**
+ * Memeriksa bahwa SEMUA tabel public yang memiliki kolom project_id
+ * sudah mengaktifkan RLS dan memiliki policy project_isolation.
+ *
+ * Penggunaan:
+ *   node lib/db/scripts/enforce-tenant-rls.mjs          # cek saja, exit 1 jika gagal
+ *   node lib/db/scripts/enforce-tenant-rls.mjs --fix     # cek + generate SQL perbaikan
+ *   node lib/db/scripts/enforce-tenant-rls.mjs --apply   # cek + jalankan perbaikan langsung
+ */
+
+import { Client } from 'pg';
+
+const POLICY_NAME = 'project_isolation';
+
+async function main() {
+  const mode = process.argv[2]; // undefined | '--fix' | '--apply'
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+
+  try {
+    const violations = await findViolations(client);
+
+    if (violations.length === 0) {
+      console.log('✅ Semua tabel dengan project_id sudah terlindungi RLS.');
+      process.exit(0);
+    }
+
+    console.error(`❌ Ditemukan ${violations.length} tabel tanpa perlindungan isolasi:\n`);
+
+    const fixStatements = [];
+
+    for (const v of violations) {
+      console.error(`  • ${v.schema}.${v.table}`);
+      if (!v.rlsEnabled) console.error(`    → RLS belum diaktifkan`);
+      if (!v.hasPolicy)  console.error(`    → Policy "${POLICY_NAME}" belum ada`);
+
+      if (!v.rlsEnabled) {
+        fixStatements.push(
+          `ALTER TABLE "${v.schema}"."${v.table}" ENABLE ROW LEVEL SECURITY;`
+        );
+        fixStatements.push(
+          `ALTER TABLE "${v.schema}"."${v.table}" FORCE ROW LEVEL SECURITY;`
+        );
+      }
+      if (!v.hasPolicy) {
+        fixStatements.push(
+          `CREATE POLICY "${POLICY_NAME}" ON "${v.schema}"."${v.table}" ` +
+          `USING (project_id = current_setting('app.current_project_id')::uuid);`
+        );
+      }
+    }
+
+    if (mode === '--fix') {
+      console.log('\n-- SQL untuk memperbaiki:\n');
+      console.log(fixStatements.join('\n'));
+    }
+
+    if (mode === '--apply') {
+      console.log('\n⚙️  Menerapkan perbaikan...');
+      for (const sql of fixStatements) {
+        await client.query(sql);
+        console.log(`  ✓ ${sql.substring(0, 80)}...`);
+      }
+      console.log('\n✅ Perbaikan selesai.');
+    }
+
+    process.exit(mode === '--apply' ? 0 : 1);
+
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Query katalog PostgreSQL untuk menemukan semua tabel public
+ * yang memiliki kolom project_id tetapi belum terlindungi RLS.
+ */
+export async function findViolations(client) {
+  const query = `
+    WITH tables_with_project_id AS (
+      -- Semua tabel di schema public yang punya kolom project_id
+      SELECT
+        c.relname AS table_name,
+        n.nspname AS schema_name,
+        c.relrowsecurity AS rls_enabled,
+        c.relforcerowsecurity AS rls_forced
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN information_schema.columns col
+        ON col.table_schema = n.nspname
+        AND col.table_name = c.relname
+        AND col.column_name = 'project_id'
+      WHERE n.nspname = 'public'
+        AND c.relkind = 'r'  -- hanya tabel biasa (bukan view, index, dll)
+    ),
+    tables_with_policy AS (
+      -- Tabel yang sudah punya policy project_isolation
+      SELECT DISTINCT tablename, schemaname
+      FROM pg_policies
+      WHERE policyname = $1
+    )
+    SELECT
+      t.schema_name AS schema,
+      t.table_name  AS table,
+      t.rls_enabled,
+      t.rls_forced,
+      (p.tablename IS NOT NULL) AS has_policy
+    FROM tables_with_project_id t
+    LEFT JOIN tables_with_policy p
+      ON p.tablename = t.table_name
+      AND p.schemaname = t.schema_name
+    WHERE NOT t.rls_enabled
+       OR NOT t.rls_forced
+       OR p.tablename IS NULL
+    ORDER BY t.table_name;
+  `;
+
+  const { rows } = await client.query(query, [POLICY_NAME]);
+
+  return rows.map(r => ({
+    schema: r.schema,
+    table: r.table,
+    rlsEnabled: r.rls_enabled && r.rls_forced,
+    hasPolicy: r.has_policy,
+  }));
+}
+
+main().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(2);
+});
+```
+
+---
+
+## 2. Integration Test
+
+```javascript
+// lib/db/tests/tenant-rls.integration.mjs
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Client } from 'pg';
+import { findViolations } from '../scripts/enforce-tenant-rls.mjs';
+
+/**
+ * Tes ini membaca katalog PostgreSQL secara langsung untuk memastikan
+ * bahwa SETIAP tabel yang memiliki kolom project_id sudah dilindungi
+ * oleh RLS dan policy project_isolation.
+ *
+ * Jika seseorang menambah tabel baru dengan kolom project_id tetapi
+ * lupa menambahkan RLS, tes ini akan GAGAL dan menyebutkan tabel mana
+ * yang terlewat.
+ */
+describe('Tenant RLS enforcement', () => {
+  let client;
+
+  beforeAll(async () => {
+    client = new Client({ connectionString: process.env.DATABASE_URL });
+    await client.connect();
+  });
+
+  afterAll(async () => {
+    await client?.end();
+  });
+
+  it('semua tabel dengan kolom project_id memiliki RLS aktif dan policy project_isolation', async () => {
+    const violations = await findViolations(client);
+
+    if (violations.length > 0) {
+      const details = violations.map(v => {
+        const missing = [];
+        if (!v.rlsEnabled) missing.push('RLS belum diaktifkan/dipaksa');
+        if (!v.hasPolicy)  missing.push(`policy "project_isolation" belum ada`);
+        return `  - ${v.schema}.${v.table}: ${missing.join(', ')}`;
+      }).join('\n');
+
+      throw new Error(
+        `Tabel berikut memiliki kolom project_id tetapi belum terlindungi isolasi tenant:\n${details}\n\n` +
+        `Jalankan: node lib/db/scripts/enforce-tenant-rls.mjs --fix\n` +
+        `untuk melihat SQL perbaikan.`
+      );
+    }
+
+    expect(violations).toHaveLength(0);
+  });
+
+  it('tidak ada tabel dengan project_id yang memiliki RLS tapi tanpa FORCE', async () => {
+    // FORCE ROW LEVEL SECURITY memastikan RLS berlaku bahkan untuk owner tabel.
+    // Tanpa FORCE, superuser/owner bisa bypass RLS secara tidak sengaja.
+    const { rows } = await client.query(`
+      SELECT c.relname AS table_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN information_schema.columns col
+        ON col.table_schema = n.nspname
+        AND col.table_name = c.relname
+        AND col.column_name = 'project_id'
+      WHERE n.nspname = 'public'
+        AND c.relkind = 'r'
+        AND c.relrowsecurity = true
+        AND c.relforcerowsecurity = false;
+    `);
+
+    if (rows.length > 0) {
+      const names = rows.map(r => `  - public.${r.table_name}`).join('\n');
+      throw new Error(
+        `Tabel berikut memiliki RLS tapi tanpa FORCE ROW LEVEL SECURITY:\n${names}\n` +
+        `Tanpa FORCE, owner tabel bisa bypass RLS.`
+      );
+    }
+
+    expect(rows).toHaveLength(0);
+  });
+
+  it('policy project_isolation menggunakan kolom project_id dan current_setting', async () => {
+    // Verifikasi bahwa policy yang ada menggunakan pola yang benar,
+    // bukan policy kosong atau menggunakan kolom lain.
+    const { rows } = await client.query(`
+      SELECT schemaname, tablename, qual
+      FROM pg_policies
+      WHERE policyname = 'project_isolation'
+        AND schemaname = 'public';
+    `);
+
+    for (const row of rows) {
+      const qual = row.qual?.toLowerCase() || '';
+      const hasProjectId = qual.includes('project_id');
+      const hasCurrentSetting = qual.includes('current_setting');
+
+      if (!hasProjectId || !hasCurrentSetting) {
+        throw new Error(
+          `Policy project_isolation pada ${row.schemaname}.${row.tablename} ` +
+          `tidak menggunakan pola yang benar.\n` +
+          `  qual: ${row.qual}\n` +
+          `  Diharapkan mengandung: project_id = current_setting('app.current_project_id')::uuid`
+        );
+      }
+    }
+  });
+
+  it('daftar tabel yang diketahui memiliki project_id selaras dengan schema', async () => {
+    // Cross-check: pastikan setiap file schema yang mendefinisikan project_id
+    // benar-benar menghasilkan tabel di database.
+    // Ini mencegah kasus di mana schema didefinisikan tapi migration belum dijalankan.
+    const { rows } = await client.query(`
+      SELECT col.table_name
+      FROM information_schema.columns col
+      WHERE col.table_schema = 'public'
+        AND col.column_name = 'project_id'
+      ORDER BY col.table_name;
+    `);
+
+    const dbTables = new Set(rows.map(r => r.table_name));
+
+    // Daftar tabel yang diharapkan (diperbarui setiap kali tabel baru ditambahkan)
+    const expectedTables = [
+      'inspections',
+      'ncrs',
+      'attachments',
+      'material_batches',
+      'material_types',
+      'material_inventory',
+      'material_usage',
+      'material_storage_locations',
+      'audit_logs',
+      'storage_cleanup_logs',
+      // Tambahkan tabel baru di sini saat dibuat
+    ];
+
+    const missingFromDb = expectedTables.filter(t => !dbTables.has(t));
+    if (missingFromDb.length > 0) {
+      throw new Error(
+        `Tabel berikut didefinisikan dalam daftar expected tapi tidak ada di database:\n` +
+        missingFromDb.map(t => `  - ${t}`).join('\n') +
+        `\nApakah migration sudah dijalankan?`
+      );
+    }
+
+    const unexpectedInDb = [...dbTables].filter(t => !expectedTables.includes(t));
+    if (unexpectedInDb.length > 0) {
+      throw new Error(
+        `Tabel berikut ada di database dengan kolom project_id tapi tidak ada dalam daftar expected:\n` +
+        unexpectedInDb.map(t => `  - ${t}`).join('\n') +
+        `\nPerbarui daftar expectedTables di test ini dan pastikan RLS sudah dikonfigurasi.`
+      );
+    }
+  });
+});
+```
+
+---
+
+## 3. CI Integration
+
+Tambahkan ke pipeline CI agar pelanggaran terdeteksi sebelum merge:
+
+```yaml
+# .github/workflows/tenant-rls-check.yml (atau setara)
+name: Tenant RLS Check
+on:
+  pull_request:
+    paths:
+      - 'lib/db/src/schema/**'
+      - 'lib/db/migrations/**'
+
+jobs:
+  enforce-rls:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run db:migrate
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+      - run: node lib/db/scripts/enforce-tenant-rls.mjs
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+```
+
+---
+
+## 4. Hook Migration (Opsional)
+
+Agar script otomatis berjalan setiap kali migration dijalankan:
+
+```javascript
+// lib/db/scripts/post-migrate.mjs
+import { execSync } from 'child_process';
+
+console.log('🔒 Memeriksa perlindungan RLS tenant...');
+try {
+  execSync('node lib/db/scripts/enforce-tenant-rls.mjs', { stdio: 'inherit' });
+} catch {
+  console.error('\n⚠️  Peringatan: Ada tabel baru tanpa RLS.');
+  console.error('Jalankan: node lib/db/scripts/enforce-tenant-rls.mjs --fix');
+  console.error('Lalu tambahkan SQL yang dihasilkan ke migration berikutnya.\n');
+  // Tidak exit(1) agar migration tetap selesai, tapi peringatan terlihat
+}
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "db:migrate": "drizzle-kit migrate && node lib/db/scripts/post-migrate.mjs"
+  }
+}
+```
+
+---
+
+## Ringkasan
+
+| Mekanisme | Fungsi |
+|---|---|
+| **`enforce-tenant-rls.mjs`** | Query `pg_class` + `information_schema.columns` untuk menemukan tabel dengan `project_id` yang belum terlindungi |
+| **Integration test** | Gagal otomatis jika ada tabel baru yang terlewat, memverifikasi FORCE RLS, dan memvalidasi pola policy |
+| **Cross-check expected list** | Mendeteksi tabel yang ada di DB tapi belum didaftarkan (dan sebaliknya) |
+| **CI check** | Menjalankan enforcement pada setiap PR yang mengubah schema/migration |
+| **Post-migrate hook** | Peringatan langsung setelah migration jika ada tabel baru tanpa RLS |
+| **`--fix` / `--apply`** | Generate atau jalankan SQL perbaikan secara otomatis |
+
+Tes terakhir (cross-check `expectedTables`) adalah pengaman ganda: jika seseorang menambah tabel baru dengan `project_id` tapi lupa memperbarui daftar, tes tetap gagal dan memaksa mereka untuk sadar akan tabel baru tersebut.

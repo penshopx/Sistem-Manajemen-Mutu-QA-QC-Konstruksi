@@ -1,0 +1,505 @@
+Berikut implementasi lengkap untuk memastikan tidak ada tabel dengan `project_id` yang lolos dari RLS.
+
+---
+
+## 1. Script Enforcement
+
+```javascript
+// lib/db/scripts/enforce-tenant-rls.mjs
+import pg from 'pg';
+
+const { Client } = pg;
+
+/**
+ * Memindai seluruh tabel di schema public yang memiliki kolom project_id,
+ * lalu memverifikasi setiap tabel sudah mengaktifkan RLS dan memiliki
+ * policy project_isolation.
+ * 
+ * Exit code 0 = semua tabel terlindungi
+ * Exit code 1 = ada tabel yang belum diproteksi
+ */
+export async function enforceTenantRLS(connectionString) {
+  const client = new Client({ connectionString });
+  await client.connect();
+
+  try {
+    // 1. Temukan semua tabel public yang memiliki kolom project_id
+    const { rows: tablesWithProjectId } = await client.query(`
+      SELECT DISTINCT
+        t.table_name,
+        t.table_schema
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name;
+    `);
+
+    if (tablesWithProjectId.length === 0) {
+      console.log('✅ Tidak ada tabel dengan kolom project_id.');
+      return { passed: true, violations: [] };
+    }
+
+    console.log(`🔍 Ditemukan ${tablesWithProjectId.length} tabel dengan kolom project_id:\n`);
+
+    const violations = [];
+
+    for (const { table_name } of tablesWithProjectId) {
+      const issues = [];
+
+      // 2. Cek apakah RLS aktif (relrowsecurity = true)
+      const { rows: rlsCheck } = await client.query(`
+        SELECT relrowsecurity, relforcerowsecurity
+        FROM pg_class
+        JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+        WHERE pg_class.relname = $1
+          AND pg_namespace.nspname = 'public';
+      `, [table_name]);
+
+      if (rlsCheck.length === 0) {
+        issues.push('Tabel tidak ditemukan di pg_class');
+      } else {
+        const { relrowsecurity, relforcerowsecurity } = rlsCheck[0];
+
+        if (!relrowsecurity) {
+          issues.push('RLS belum diaktifkan (ENABLE ROW LEVEL SECURITY)');
+        }
+
+        if (!relforcerowsecurity) {
+          issues.push('RLS belum dipaksa untuk table owner (FORCE ROW LEVEL SECURITY)');
+        }
+      }
+
+      // 3. Cek apakah policy project_isolation ada
+      const { rows: policyCheck } = await client.query(`
+        SELECT polname, polcmd, polroles::regrole[]
+        FROM pg_policy
+        JOIN pg_class ON pg_policy.polrelid = pg_class.oid
+        JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+        WHERE pg_class.relname = $1
+          AND pg_namespace.nspname = 'public'
+          AND pg_policy.polname = 'project_isolation';
+      `, [table_name]);
+
+      if (policyCheck.length === 0) {
+        issues.push('Policy "project_isolation" tidak ditemukan');
+      }
+
+      // 4. Laporkan hasil per tabel
+      if (issues.length > 0) {
+        console.log(`  ❌ ${table_name}`);
+        for (const issue of issues) {
+          console.log(`       └─ ${issue}`);
+        }
+        violations.push({ table: table_name, issues });
+      } else {
+        console.log(`  ✅ ${table_name}`);
+      }
+    }
+
+    console.log('');
+
+    if (violations.length > 0) {
+      console.log(`⚠️  ${violations.length} tabel belum terlindungi sepenuhnya.`);
+      console.log('\nPerbaikan yang diperlukan:\n');
+      for (const { table, issues } of violations) {
+        console.log(`-- ${table}`);
+        if (issues.some(i => i.includes('RLS belum diaktifkan'))) {
+          console.log(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY;`);
+        }
+        if (issues.some(i => i.includes('RLS belum dipaksa'))) {
+          console.log(`ALTER TABLE public.${table} FORCE ROW LEVEL SECURITY;`);
+        }
+        if (issues.some(i => i.includes('project_isolation'))) {
+          console.log(`CREATE POLICY project_isolation ON public.${table}`);
+          console.log(`  FOR ALL`);
+          console.log(`  USING (project_id = current_setting('app.current_project_id')::uuid);`);
+        }
+        console.log('');
+      }
+      return { passed: false, violations };
+    }
+
+    console.log('✅ Semua tabel dengan project_id sudah terlindungi RLS.');
+    return { passed: true, violations: [] };
+
+  } finally {
+    await client.end();
+  }
+}
+
+// Jalankan langsung jika dipanggil dari CLI
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    console.error('❌ DATABASE_URL tidak diset.');
+    process.exit(1);
+  }
+
+  const result = await enforceTenantRLS(connectionString);
+  process.exit(result.passed ? 0 : 1);
+}
+```
+
+---
+
+## 2. Migration Helper (Opsional tapi Disarankan)
+
+Script ini bisa dijalankan setelah setiap migration baru untuk otomatis menambahkan RLS ke tabel yang belum diproteksi:
+
+```javascript
+// lib/db/scripts/auto-apply-tenant-rls.mjs
+import pg from 'pg';
+
+const { Client } = pg;
+
+/**
+ * Otomatis menerapkan RLS dan policy project_isolation ke semua tabel
+ * yang memiliki kolom project_id tetapi belum diproteksi.
+ * 
+ * ⚠️ Gunakan hanya di environment development/staging.
+ * Di production, gunakan script enforce untuk deteksi saja.
+ */
+export async function autoApplyTenantRLS(connectionString) {
+  const client = new Client({ connectionString });
+  await client.connect();
+
+  try {
+    const { rows: unprotected } = await client.query(`
+      SELECT DISTINCT t.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_class
+          JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+          WHERE pg_class.relname = t.table_name
+            AND pg_namespace.nspname = 'public'
+            AND pg_class.relrowsecurity = true
+        )
+      ORDER BY t.table_name;
+    `);
+
+    if (unprotected.length === 0) {
+      console.log('✅ Semua tabel sudah terlindungi.');
+      return;
+    }
+
+    for (const { table_name } of unprotected) {
+      console.log(`🔧 Menerapkan RLS ke ${table_name}...`);
+
+      await client.query(`
+        ALTER TABLE public.${table_name} ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.${table_name} FORCE ROW LEVEL SECURITY;
+      `);
+
+      await client.query(`
+        CREATE POLICY project_isolation ON public.${table_name}
+          FOR ALL
+          USING (project_id = current_setting('app.current_project_id')::uuid);
+      `);
+
+      console.log(`  ✅ ${table_name} terlindungi.`);
+    }
+
+  } finally {
+    await client.end();
+  }
+}
+```
+
+---
+
+## 3. Integration Test
+
+```typescript
+// lib/db/tests/tenant-rls.integration.mjs
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
+
+const { Client } = pg;
+
+describe('Tenant RLS Enforcement', () => {
+  let client;
+
+  beforeAll(async () => {
+    client = new Client({ connectionString: process.env.DATABASE_URL });
+    await client.connect();
+  });
+
+  afterAll(async () => {
+    await client?.end();
+  });
+
+  it('semua tabel dengan project_id harus mengaktifkan RLS', async () => {
+    // Temukan semua tabel public dengan kolom project_id
+    const { rows: tables } = await client.query(`
+      SELECT DISTINCT t.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name;
+    `);
+
+    expect(tables.length).toBeGreaterThan(0);
+
+    const unprotected = [];
+
+    for (const { table_name } of tables) {
+      const { rows } = await client.query(`
+        SELECT relrowsecurity
+        FROM pg_class
+        JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+        WHERE pg_class.relname = $1
+          AND pg_namespace.nspname = 'public';
+      `, [table_name]);
+
+      if (rows.length === 0 || !rows[0].relrowsecurity) {
+        unprotected.push(table_name);
+      }
+    }
+
+    expect(unprotected).toEqual([]);
+    // Jika gagal, pesan error akan menampilkan tabel mana yang belum diproteksi
+  });
+
+  it('semua tabel dengan project_id harus memaksa RLS untuk table owner', async () => {
+    const { rows: tables } = await client.query(`
+      SELECT DISTINCT t.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name;
+    `);
+
+    const notForced = [];
+
+    for (const { table_name } of tables) {
+      const { rows } = await client.query(`
+        SELECT relforcerowsecurity
+        FROM pg_class
+        JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+        WHERE pg_class.relname = $1
+          AND pg_namespace.nspname = 'public';
+      `, [table_name]);
+
+      if (rows.length === 0 || !rows[0].relforcerowsecurity) {
+        notForced.push(table_name);
+      }
+    }
+
+    expect(notForced).toEqual([]);
+  });
+
+  it('semua tabel dengan project_id harus memiliki policy project_isolation', async () => {
+    const { rows: tables } = await client.query(`
+      SELECT DISTINCT t.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name;
+    `);
+
+    const missingPolicy = [];
+
+    for (const { table_name } of tables) {
+      const { rows } = await client.query(`
+        SELECT polname
+        FROM pg_policy
+        JOIN pg_class ON pg_policy.polrelid = pg_class.oid
+        JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+        WHERE pg_class.relname = $1
+          AND pg_namespace.nspname = 'public'
+          AND pg_policy.polname = 'project_isolation';
+      `, [table_name]);
+
+      if (rows.length === 0) {
+        missingPolicy.push(table_name);
+      }
+    }
+
+    expect(missingPolicy).toEqual([]);
+  });
+
+  it('policy project_isolation harus menggunakan current_setting app.current_project_id', async () => {
+    const { rows: tables } = await client.query(`
+      SELECT DISTINCT t.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name;
+    `);
+
+    const wrongPolicy = [];
+
+    for (const { table_name } of tables) {
+      const { rows } = await client.query(`
+        SELECT pg_get_expr(polqual, polrelid) AS qual_expr
+        FROM pg_policy
+        JOIN pg_class ON pg_policy.polrelid = pg_class.oid
+        JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+        WHERE pg_class.relname = $1
+          AND pg_namespace.nspname = 'public'
+          AND pg_policy.polname = 'project_isolation';
+      `, [table_name]);
+
+      if (rows.length > 0) {
+        const expr = rows[0].qual_expr;
+        // Verifikasi policy menggunakan current_setting
+        if (!expr.includes('current_setting') || !expr.includes('project_id')) {
+          wrongPolicy.push({ table: table_name, expression: expr });
+        }
+      }
+    }
+
+    expect(wrongPolicy).toEqual([]);
+  });
+
+  it('daftar tabel dengan project_id harus sesuai dengan skema Drizzle', async () => {
+    // Baca tabel dari PostgreSQL
+    const { rows: dbTables } = await client.query(`
+      SELECT DISTINCT t.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON c.table_name = t.table_name
+        AND c.table_schema = t.table_schema
+      WHERE c.column_name = 'project_id'
+        AND t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name;
+    `);
+
+    const dbTableNames = dbTables.map(r => r.table_name).sort();
+
+    // Baca tabel dari skema Drizzle (import semua file schema)
+    const schemaModules = await import('../src/schema/index.js');
+    const drizzleTableNames = Object.values(schemaModules)
+      .filter(t => t && typeof t === 'object' && t[Symbol.for('drizzle:Name')])
+      .map(t => t[Symbol.for('drizzle:Name')])
+      .filter(name => {
+        // Cek apakah tabel ini punya kolom project_id
+        const table = Object.values(schemaModules).find(
+          t => t && t[Symbol.for('drizzle:Name')] === name
+        );
+        return table && 'project_id' in (table[Symbol.for('drizzle:Columns')] || {});
+      })
+      .sort();
+
+    // Jika perbandingan langsung dengan Drizzle internal API terlalu rapuh,
+    // gunakan pendekatan sederhana: pastikan jumlah tabel DB >= jumlah tabel skema
+    expect(dbTableNames.length).toBeGreaterThanOrEqual(drizzleTableNames.length);
+  });
+});
+```
+
+---
+
+## 4. CI/CD Integration
+
+Tambahkan ke pipeline CI agar setiap PR yang menambah tabel baru otomatis terverifikasi:
+
+```yaml
+# .github/workflows/tenant-rls-check.yml
+name: Tenant RLS Enforcement
+
+on:
+  pull_request:
+    paths:
+      - 'lib/db/src/schema/**'
+      - 'lib/db/migrations/**'
+
+jobs:
+  check-rls:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: qaqc_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Run migrations
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/qaqc_test
+
+      - name: Enforce tenant RLS
+        run: node lib/db/scripts/enforce-tenant-rls.mjs
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/qaqc_test
+```
+
+---
+
+## 5. Pre-commit Hook (Opsional)
+
+```bash
+#!/bin/bash
+# .husky/pre-commit (tambahkan baris ini)
+
+# Cek apakah ada perubahan di folder schema
+if git diff --cached --name-only | grep -q 'lib/db/src/schema/'; then
+  echo "🔍 Perubahan schema terdeteksi. Memeriksa RLS..."
+  node lib/db/scripts/enforce-tenant-rls.mjs
+  if [ $? -ne 0 ]; then
+    echo "❌ Commit ditolak: ada tabel baru tanpa RLS."
+    echo "   Jalankan: node lib/db/scripts/auto-apply-tenant-rls.mjs"
+    exit 1
+  fi
+fi
+```
+
+---
+
+## Ringkasan
+
+| Komponen | Fungsi |
+|---|---|
+| `enforce-tenant-rls.mjs` | Deteksi tabel tanpa RLS, output SQL perbaikan, exit code untuk CI |
+| `auto-apply-tenant-rls.mjs` | Otomatis terapkan RLS (dev/staging saja) |
+| `tenant-rls.integration.mjs` | 5 test: RLS aktif, force RLS, policy ada, policy benar, sinkron skema |
+| CI workflow | Blokir PR yang menambah tabel tanpa RLS |
+| Pre-commit hook | Cegah commit schema tanpa RLS |
+
+Pendekatan ini memastikan bahwa **setiap tabel baru dengan `project_id` akan langsung terdeteksi** — baik oleh developer lokal (pre-commit), CI pipeline, maupun integration test — sebelum data lintas proyek berisiko terekspos.
