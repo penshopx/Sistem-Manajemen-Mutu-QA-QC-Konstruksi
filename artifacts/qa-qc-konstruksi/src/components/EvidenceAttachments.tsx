@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getGetWorkspaceQueryKey } from "@workspace/api-client-react";
-import { Download, Loader2, Paperclip, Trash2, Upload } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, FileText, Loader2, Paperclip, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/core";
 
 export type EvidenceAttachment = {
@@ -24,12 +24,52 @@ async function responseError(response: Response) {
   return body?.error || `Permintaan gagal (${response.status})`;
 }
 
+function isImage(attachment: EvidenceAttachment) {
+  return attachment.contentType.startsWith("image/")
+    || /\.(avif|gif|jpe?g|png|webp)$/i.test(attachment.fileName);
+}
+
+function fileSize(size: number) {
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.ceil(size / 1024))} KB`;
+}
+
 export function EvidenceAttachments({ collection, recordId, attachments = [] }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
+  const [activePhoto, setActivePhoto] = useState<number | null>(null);
+  const photos = attachments.filter(isImage);
+  const documents = attachments.filter((attachment) => !isImage(attachment));
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: getGetWorkspaceQueryKey() });
+
+  useEffect(() => {
+    if (activePhoto === null) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActivePhoto(null);
+      if (event.key === "ArrowLeft") {
+        setActivePhoto((current) => current === null ? null : (current - 1 + photos.length) % photos.length);
+      }
+      if (event.key === "ArrowRight") {
+        setActivePhoto((current) => current === null ? null : (current + 1) % photos.length);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activePhoto, photos.length]);
+
+  useEffect(() => {
+    if (activePhoto !== null && activePhoto >= photos.length) {
+      setActivePhoto(photos.length ? photos.length - 1 : null);
+    }
+  }, [activePhoto, photos.length]);
 
   const upload = async (file: File) => {
     setBusy(true);
@@ -113,19 +153,52 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
           Unggah
         </Button>
       </div>
-      {attachments.map((attachment) => (
-        <div key={attachment.id} className="flex items-center gap-1 rounded border border-border bg-muted/20 px-2 py-1">
+      {photos.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          {photos.map((attachment, index) => (
+            <div key={attachment.id} className="group relative aspect-square overflow-hidden rounded-md border border-border bg-muted">
+              <button
+                type="button"
+                className="h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                onClick={() => setActivePhoto(index)}
+                aria-label={`Buka foto ${attachment.fileName}`}
+              >
+                <img
+                  src={attachment.downloadUrl}
+                  alt={attachment.fileName}
+                  loading="lazy"
+                  className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                />
+              </button>
+              <button
+                type="button"
+                aria-label={`Hapus ${attachment.fileName}`}
+                className="absolute right-1 top-1 rounded bg-background/85 p-1 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive focus:opacity-100 group-hover:opacity-100"
+                disabled={busy}
+                onClick={() => void remove(attachment)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1.5 pb-1 pt-4 text-[9px] text-white">
+                {attachment.fileName}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {documents.map((attachment) => (
+        <div key={attachment.id} className="flex items-center gap-2 rounded border border-border bg-muted/20 px-2 py-1.5">
+          <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
           <a
             href={attachment.downloadUrl}
-            target="_blank"
-            rel="noreferrer"
+            download={attachment.fileName}
             className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-primary hover:underline"
-            title={attachment.fileName}
+            title={`Unduh ${attachment.fileName}`}
           >
-            <Download className="h-3 w-3 shrink-0" />
             <span className="truncate">{attachment.fileName}</span>
+            <Download className="h-3 w-3 shrink-0" />
           </a>
-          <span className="text-[9px] text-muted-foreground">{Math.max(1, Math.ceil(attachment.size / 1024))} KB</span>
+          <span className="whitespace-nowrap text-[9px] text-muted-foreground">{fileSize(attachment.size)}</span>
           <button
             type="button"
             aria-label={`Hapus ${attachment.fileName}`}
@@ -137,6 +210,70 @@ export function EvidenceAttachments({ collection, recordId, attachments = [] }: 
           </button>
         </div>
       ))}
+      {activePhoto !== null && photos[activePhoto] && (
+        <div
+          className="fixed inset-0 z-[100] flex flex-col bg-black/95"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Galeri foto bukti"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setActivePhoto(null);
+          }}
+        >
+          <div className="flex items-center justify-between gap-4 px-4 py-3 text-white">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">{photos[activePhoto].fileName}</div>
+              <div className="text-xs text-white/60">{activePhoto + 1} dari {photos.length}</div>
+            </div>
+            <div className="flex items-center gap-1">
+              <a
+                href={photos[activePhoto].downloadUrl}
+                download={photos[activePhoto].fileName}
+                className="rounded-md p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                aria-label={`Unduh ${photos[activePhoto].fileName}`}
+              >
+                <Download className="h-5 w-5" />
+              </a>
+              <button
+                type="button"
+                className="rounded-md p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                onClick={() => setActivePhoto(null)}
+                aria-label="Tutup galeri"
+                autoFocus
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+          </div>
+          <div className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4">
+            <img
+              src={photos[activePhoto].downloadUrl}
+              alt={photos[activePhoto].fileName}
+              className="max-h-full max-w-full object-contain"
+            />
+            {photos.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  className="absolute left-2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 sm:left-4"
+                  onClick={() => setActivePhoto((activePhoto - 1 + photos.length) % photos.length)}
+                  aria-label="Foto sebelumnya"
+                >
+                  <ChevronLeft className="h-7 w-7" />
+                </button>
+                <button
+                  type="button"
+                  className="absolute right-2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 sm:right-4"
+                  onClick={() => setActivePhoto((activePhoto + 1) % photos.length)}
+                  aria-label="Foto berikutnya"
+                >
+                  <ChevronRight className="h-7 w-7" />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
