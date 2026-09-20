@@ -6,13 +6,13 @@ import {
   db,
   recordAttachmentsTable,
 } from "@workspace/db";
+import { runAttachmentUploadCleanup } from "./attachment-upload-cleanup";
 import { logger } from "./logger";
 
 const sidecar = "http://127.0.0.1:1106";
 export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
 export const ATTACHMENT_UPLOAD_GRACE_PERIOD_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
-const CLEANUP_CLAIM_TIMEOUT_MS = 30 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 100;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/jpeg",
@@ -85,68 +85,57 @@ export async function createAttachmentUploadUrl() {
 }
 
 export async function cleanupOrphanedAttachmentUploads(now = new Date()) {
-  const staleClaimBefore = new Date(now.getTime() - CLEANUP_CLAIM_TIMEOUT_MS);
-  const candidates = await db.select({
-    id: attachmentUploadsTable.id,
-    objectPath: attachmentUploadsTable.objectPath,
-  }).from(attachmentUploadsTable).where(and(
-    or(
-      isNull(attachmentUploadsTable.cleanupStartedAt),
-      lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
-    ),
-    lt(attachmentUploadsTable.expiresAt, now),
-  )).limit(CLEANUP_BATCH_SIZE);
-
-  let deleted = 0;
-  let preserved = 0;
-  let failed = 0;
-
-  for (const candidate of candidates) {
-    try {
+  const result = await runAttachmentUploadCleanup({
+    async listCandidates(cleanupNow, staleClaimBefore) {
+      return db.select({
+        id: attachmentUploadsTable.id,
+        objectPath: attachmentUploadsTable.objectPath,
+      }).from(attachmentUploadsTable).where(and(
+        or(
+          isNull(attachmentUploadsTable.cleanupStartedAt),
+          lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
+        ),
+        lt(attachmentUploadsTable.expiresAt, cleanupNow),
+      )).limit(CLEANUP_BATCH_SIZE);
+    },
+    async claimCandidate(id, cleanupNow, staleClaimBefore) {
       const [claimed] = await db.update(attachmentUploadsTable)
-        .set({ cleanupStartedAt: now })
+        .set({ cleanupStartedAt: cleanupNow })
         .where(and(
-          eq(attachmentUploadsTable.id, candidate.id),
+          eq(attachmentUploadsTable.id, id),
           or(
             isNull(attachmentUploadsTable.cleanupStartedAt),
             lt(attachmentUploadsTable.cleanupStartedAt, staleClaimBefore),
           ),
         ))
         .returning({ id: attachmentUploadsTable.id });
-      if (!claimed) {
-        preserved += 1;
-        continue;
-      }
-
+      return Boolean(claimed);
+    },
+    async hasAttachment(objectPath) {
       const [attachment] = await db.select({ id: recordAttachmentsTable.id })
         .from(recordAttachmentsTable)
-        .where(eq(recordAttachmentsTable.objectPath, candidate.objectPath))
+        .where(eq(recordAttachmentsTable.objectPath, objectPath))
         .limit(1);
-
-      if (attachment) {
-        await db.delete(attachmentUploadsTable)
-          .where(eq(attachmentUploadsTable.id, candidate.id));
-        preserved += 1;
-        continue;
-      }
-
-      await attachmentObject(candidate.objectPath).delete({ ignoreNotFound: true });
-      await db.delete(attachmentUploadsTable)
-        .where(eq(attachmentUploadsTable.id, candidate.id));
-      deleted += 1;
-    } catch (err) {
-      failed += 1;
+      return Boolean(attachment);
+    },
+    async deleteObject(objectPath) {
+      await attachmentObject(objectPath).delete({ ignoreNotFound: true });
+    },
+    async deleteTrackingRow(id) {
+      await db.delete(attachmentUploadsTable).where(eq(attachmentUploadsTable.id, id));
+    },
+    async releaseClaim(id) {
       await db.update(attachmentUploadsTable)
         .set({ cleanupStartedAt: null })
-        .where(eq(attachmentUploadsTable.id, candidate.id))
-        .catch((resetErr) => {
-          logger.error({ err: resetErr, uploadId: candidate.id }, "Failed to release attachment cleanup claim");
-        });
-      logger.error({ err, uploadId: candidate.id }, "Failed to clean orphaned attachment upload");
-    }
-  }
-
-  const result = { scanned: candidates.length, deleted, preserved, failed };
+        .where(eq(attachmentUploadsTable.id, id));
+    },
+    reportCleanupError(err, uploadId) {
+      logger.error({ err, uploadId }, "Failed to clean orphaned attachment upload");
+    },
+    reportReleaseError(err, uploadId) {
+      logger.error({ err, uploadId }, "Failed to release attachment cleanup claim");
+    },
+  }, now);
   logger.info(result, "Finished orphaned attachment upload cleanup");
   return result;
 }
