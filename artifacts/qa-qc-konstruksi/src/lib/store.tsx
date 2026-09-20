@@ -1,7 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  getGetWorkspaceQueryKey,
   useCreateWorkspaceRecord,
   useDeleteWorkspaceRecord,
   useGetWorkspace,
@@ -9,6 +8,11 @@ import {
   useUpdateWorkspaceRecord,
 } from "@workspace/api-client-react";
 import type { EvidenceAttachment } from "@/components/EvidenceAttachments";
+import {
+  refreshWorkspace,
+  workspaceMutationOptions,
+  WORKSPACE_QUERY_OPTIONS,
+} from "./workspace-cache";
 
 export type Project = { id: string; name: string; code: string; client: string; contractor: string; progress: number; qualityScore: number; status: string };
 export type QualityPlan = { id: string; title: string; revision: string; status: string; approvedBy: string; updatedAt: string };
@@ -55,18 +59,15 @@ const StoreContext = createContext<StoreContextType | null>(null);
 export function StoreProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const workspace = useGetWorkspace({
-    query: {
-      queryKey: getGetWorkspaceQueryKey(),
-      refetchInterval: 15_000,
-      staleTime: 5_000,
-    },
+    query: WORKSPACE_QUERY_OPTIONS,
   });
-  const refresh = () => queryClient.invalidateQueries({ queryKey: getGetWorkspaceQueryKey() });
+  const refresh = () => refreshWorkspace(queryClient);
   const onError = (error: Error) => window.alert(error.message);
-  const create = useCreateWorkspaceRecord({ mutation: { onSuccess: refresh, onError } });
-  const update = useUpdateWorkspaceRecord({ mutation: { onSuccess: refresh, onError } });
-  const remove = useDeleteWorkspaceRecord({ mutation: { onSuccess: refresh, onError } });
-  const invite = useInviteProjectMember({ mutation: { onSuccess: refresh, onError } });
+  const mutationOptions = workspaceMutationOptions(refresh, onError);
+  const create = useCreateWorkspaceRecord(mutationOptions.create);
+  const update = useUpdateWorkspaceRecord(mutationOptions.update);
+  const remove = useDeleteWorkspaceRecord(mutationOptions.remove);
+  const invite = useInviteProjectMember(mutationOptions.invite);
 
   const data = workspace.data;
   const state: State = data ? {

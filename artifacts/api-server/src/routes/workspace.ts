@@ -44,6 +44,11 @@ import {
   MAX_ATTACHMENT_SIZE,
   streamAttachment,
 } from "../lib/object-storage";
+import {
+  createdRecordAudit,
+  deletedRecordAudit,
+  updatedRecordAudit,
+} from "../lib/record-audit";
 
 const router: IRouter = Router();
 router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => {
@@ -58,10 +63,6 @@ router.use("/workspace", requireAuth, async (_req, res, next): Promise<void> => 
     next(error);
   }
 });
-
-function subjectFor(record: Record<string, unknown>) {
-  return String(record.title ?? record.name ?? record.number ?? record.reference ?? record.activity ?? record.id ?? "Record");
-}
 
 router.get("/workspace", async (req, res): Promise<void> => {
   const access = res.locals.projectAccess as ProjectAccess;
@@ -365,15 +366,12 @@ router.post("/workspace/:collection", async (req, res): Promise<void> => {
       createdBy: access.user.id,
       updatedBy: access.user.id,
     }).returning();
-    await tx.insert(auditEventsTable).values({
+    await tx.insert(auditEventsTable).values(createdRecordAudit({
       projectId: access.project.id,
       actorUserId: access.user.id,
       recordType: params.data.collection,
       recordId: id,
-      action: "Created",
-      subject: subjectFor(body.data),
-      after: body.data,
-    });
+    }, body.data));
     return inserted;
   });
   res.status(201).json({ ...created.data, id: created.id });
@@ -404,16 +402,12 @@ router.patch("/workspace/:collection/:id", async (req, res): Promise<void> => {
       data,
       updatedBy: access.user.id,
     }).where(eq(qaqcRecordsTable.id, existing.id)).returning();
-    await tx.insert(auditEventsTable).values({
+    await tx.insert(auditEventsTable).values(updatedRecordAudit({
       projectId: access.project.id,
       actorUserId: access.user.id,
       recordType: params.data.collection,
       recordId: existing.id,
-      action: "Updated",
-      subject: subjectFor(data),
-      before: existing.data,
-      after: data,
-    });
+    }, existing.data, data));
     return { ...updated.data, id: updated.id };
   });
   if (!result) {
@@ -442,15 +436,12 @@ router.delete("/workspace/:collection/:id", async (req, res): Promise<void> => {
     )).limit(1);
     if (!existing) return false;
     await tx.delete(qaqcRecordsTable).where(eq(qaqcRecordsTable.id, existing.id));
-    await tx.insert(auditEventsTable).values({
+    await tx.insert(auditEventsTable).values(deletedRecordAudit({
       projectId: access.project.id,
       actorUserId: access.user.id,
       recordType: params.data.collection,
       recordId: existing.id,
-      action: "Deleted",
-      subject: subjectFor(existing.data),
-      before: existing.data,
-    });
+    }, existing.data));
     return true;
   });
   if (!deleted) {
