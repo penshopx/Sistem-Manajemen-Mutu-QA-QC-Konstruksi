@@ -1,0 +1,778 @@
+Berikut implementasi lengkap untuk sinkronisasi MIR ke status batch material:
+
+---
+
+## 1. Schema Updates
+
+```typescript
+// lib/db/src/schema/materials.ts
+import { pgTable, serial, varchar, text, timestamp, integer, uuid, boolean } from 'drizzle-orm/pg-core';
+import { projects } from './projects';
+import { users } from './users';
+import { inspections } from './inspections';
+
+export const materialBatches = pgTable('material_batches', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  materialTypeId: integer('material_type_id').references(() => materialTypes.id).notNull(),
+  batchNumber: varchar('batch_number', { length: 100 }).notNull(),
+  supplierName: varchar('supplier_name', { length: 255 }).notNull(),
+  deliveryDate: timestamp('delivery_date').notNull(),
+  quantity: integer('quantity').notNull(),
+  certificateUrl: text('certificate_url'),
+  
+  // MIR tracking
+  inspectionStatus: varchar('inspection_status', { length: 50 }).default('pending').notNull(),
+  mirInspectionId: integer('mir_inspection_id').references(() => inspections.id), // Link ke MIR
+  mirLinkedAt: timestamp('mir_linked_at'),
+  mirLinkedBy: uuid('mir_linked_by').references(() => users.id),
+  
+  receivedBy: uuid('received_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+```
+
+```typescript
+// lib/db/src/schema/inspections.ts (tambahan)
+export const inspections = pgTable('inspections', {
+  id: serial('id').primaryKey(),
+  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  
+  // Tambahkan field untuk link ke batch
+  type: varchar('type', { length: 50 }).notNull(), // 'WORK_INSPECTION' | 'MATERIAL_INSPECTION'
+  relatedBatchId: integer('related_batch_id').references(() => materialBatches.id),
+  
+  // ... field lainnya
+});
+```
+
+---
+
+## 2. Service Layer untuk Sinkronisasi
+
+```typescript
+// artifacts/api-server/src/services/mir-batch-sync.ts
+import { db } from '../lib/db';
+import { materialBatches, inspections, auditLogs } from '../../lib/db/schema';
+import { eq, and } from 'drizzle-orm';
+
+export type MIRResult = 'approved' | 'rejected' | 'conditional';
+
+export class MIRBatchSyncError extends Error {
+  constructor(message: string, public code: string) {
+    super(message);
+  }
+}
+
+/**
+ * Sinkronkan hasil MIR ke status batch material dalam satu transaksi atomik.
+ * 
+ * @throws MIRBatchSyncError jika batch tidak ditemukan atau tidak dalam proyek yang sama
+ */
+export async function syncMIRResultToBatch(params: {
+  inspectionId: number;
+  projectId: string;
+  result: MIRResult;
+  userId: string;
+  notes?: string;
+}): Promise<void> {
+  const { inspectionId, projectId, result, userId, notes } = params;
+
+  await db.transaction(async (tx) => {
+    // 1. Verifikasi inspeksi adalah MIR dan dalam proyek yang sama
+    const inspection = await tx.query.inspections.findFirst({
+      where: and(
+        eq(inspections.id, inspectionId),
+        eq(inspections.projectId, projectId),
+        eq(inspections.type, 'MATERIAL_INSPECTION')
+      ),
+    });
+
+    if (!inspection) {
+      throw new MIRBatchSyncError(
+        'Inspeksi tidak ditemukan atau bukan MIR',
+        'INSPECTION_NOT_FOUND'
+      );
+    }
+
+    if (!inspection.relatedBatchId) {
+      throw new MIRBatchSyncError(
+        'MIR tidak tertaut ke batch material',
+        'BATCH_NOT_LINKED'
+      );
+    }
+
+    // 2. Verifikasi batch dalam proyek yang sama
+    const batch = await tx.query.materialBatches.findFirst({
+      where: and(
+        eq(materialBatches.id, inspection.relatedBatchId),
+        eq(materialBatches.projectId, projectId)
+      ),
+    });
+
+    if (!batch) {
+      throw new MIRBatchSyncError(
+        'Batch material tidak ditemukan dalam proyek ini',
+        'PROJECT_ISOLATION_VIOLATION'
+      );
+    }
+
+    // 3. Baca status sebelum perubahan
+    const previousStatus = batch.inspectionStatus;
+
+    // 4. Update status batch
+    const [updatedBatch] = await tx.update(materialBatches)
+      .set({
+        inspectionStatus: result,
+        updatedAt: new Date(),
+      })
+      .where(eq(materialBatches.id, batch.id))
+      .returning();
+
+    // 5. Jika rejected, karantina inventori
+    if (result === 'rejected') {
+      await tx.update(materialInventory)
+        .set({ 
+          isQuarantined: true,
+          quarantineReason: `MIR #${inspectionId} ditolak: ${notes || 'tidak ada catatan'}`,
+          quarantinedAt: new Date(),
+          quarantinedBy: userId,
+        })
+        .where(eq(materialInventory.batchId, batch.id));
+    }
+
+    // 6. Catat audit trail
+    await tx.insert(auditLogs).values({
+      projectId,
+      userId,
+      action: 'SYNC_MIR_TO_BATCH',
+      recordType: 'material_batch',
+      recordId: batch.id,
+      before: { 
+        inspectionStatus: previousStatus,
+        mirInspectionId: batch.mirInspectionId 
+      },
+      after: { 
+        inspectionStatus: updatedBatch.inspectionStatus,
+        mirInspectionId: inspection.id 
+      },
+      metadata: {
+        inspectionId,
+        result,
+        notes,
+      },
+    });
+  });
+}
+
+/**
+ * Tautkan MIR ke batch material (dilakukan saat MIR dibuat)
+ */
+export async function linkMIRToBatch(params: {
+  inspectionId: number;
+  batchId: number;
+  projectId: string;
+  userId: string;
+}): Promise<void> {
+  const { inspectionId, batchId, projectId, userId } = params;
+
+  await db.transaction(async (tx) => {
+    // Verifikasi batch dalam proyek yang sama
+    const batch = await tx.query.materialBatches.findFirst({
+      where: and(
+        eq(materialBatches.id, batchId),
+        eq(materialBatches.projectId, projectId)
+      ),
+    });
+
+    if (!batch) {
+      throw new MIRBatchSyncError(
+        'Batch material tidak ditemukan dalam proyek ini',
+        'PROJECT_ISOLATION_VIOLATION'
+      );
+    }
+
+    // Update batch
+    await tx.update(materialBatches)
+      .set({
+        mirInspectionId: inspectionId,
+        mirLinkedAt: new Date(),
+        mirLinkedBy: userId,
+        updatedAt: new Date(),
+      })
+      .where(eq(materialBatches.id, batchId));
+
+    // Update inspeksi
+    await tx.update(inspections)
+      .set({
+        relatedBatchId: batchId,
+      })
+      .where(eq(inspections.id, inspectionId));
+
+    // Audit
+    await tx.insert(auditLogs).values({
+      projectId,
+      userId,
+      action: 'LINK_MIR_TO_BATCH',
+      recordType: 'material_batch',
+      recordId: batchId,
+      before: { mirInspectionId: null },
+      after: { mirInspectionId: inspectionId },
+      metadata: { inspectionId, batchId },
+    });
+  });
+}
+```
+
+---
+
+## 3. API Endpoints
+
+```typescript
+// artifacts/api-server/src/routes/materials.ts
+import { Router } from 'express';
+import { requireAuth, requireRole } from '../middlewares/auth';
+import { linkMIRToBatch } from '../services/mir-batch-sync';
+import { db } from '../lib/db';
+import { materialBatches, inspections } from '../../lib/db/schema';
+import { eq, and } from 'drizzle-orm';
+
+const router = Router();
+
+// POST /api/projects/:projectId/materials/batches/:batchId/link-mir
+router.post(
+  '/projects/:projectId/materials/batches/:batchId/link-mir',
+  requireAuth,
+  requireRole(['QA_ENGINEER', 'QA_ENGINEER_MADYA', 'QA_MANAGER']),
+  async (req, res) => {
+    const { projectId, batchId } = req.params;
+    const { inspectionId } = req.body;
+    const userId = req.auth.userId;
+
+    try {
+      await linkMIRToBatch({
+        inspectionId,
+        batchId: parseInt(batchId),
+        projectId,
+        userId,
+      });
+
+      res.status(200).json({ success: true });
+    } catch (error) {
+      if (error.code === 'PROJECT_ISOLATION_VIOLATION') {
+        return res.status(403).json({ error: 'Akses ditolak' });
+      }
+      if (error.code === 'BATCH_NOT_LINKED') {
+        return res.status(400).json({ error: error.message });
+      }
+      res.status(500).json({ error: 'Gagal menautkan MIR' });
+    }
+  }
+);
+
+// GET /api/projects/:projectId/materials/batches/:batchId/trace
+// Tambahkan informasi MIR
+router.get(
+  '/projects/:projectId/materials/batches/:batchId/trace',
+  requireAuth,
+  async (req, res) => {
+    const { projectId, batchId } = req.params;
+
+    try {
+      const batch = await db.query.materialBatches.findFirst({
+        where: and(
+          eq(materialBatches.id, parseInt(batchId)),
+          eq(materialBatches.projectId, projectId)
+        ),
+        with: {
+          materialType: true,
+          mirInspection: {
+            columns: ['id', 'status', 'approvedAt', 'approvedBy'],
+            with: {
+              approvedByUser: {
+                columns: ['id', 'name', 'email'],
+              },
+            },
+          },
+          inventory: {
+            with: {
+              storageLocation: true,
+            },
+          },
+          usageRecords: {
+            with: {
+              installedByUser: true,
+            },
+          },
+        },
+      });
+
+      if (!batch) {
+        return res.status(404).json({ error: 'Batch tidak ditemukan' });
+      }
+
+      res.json(batch);
+    } catch (error) {
+      res.status(500).json({ error: 'Gagal mengambil trace batch' });
+    }
+  }
+);
+
+export default router;
+```
+
+```typescript
+// artifacts/api-server/src/routes/inspections.ts
+// Integrasikan sinkronisasi ke endpoint approval/rejection MIR
+import { syncMIRResultToBatch } from '../services/mir-batch-sync';
+
+router.post(
+  '/projects/:projectId/inspections/:inspectionId/resolve',
+  requireAuth,
+  requireRole(['QA_ENGINEER', 'QA_ENGINEER_MADYA', 'QA_MANAGER']),
+  async (req, res) => {
+    const { projectId, inspectionId } = req.params;
+    const { result, notes } = req.body;
+    const userId = req.auth.userId;
+
+    try {
+      // Update inspeksi (logika existing)
+      const [updatedInspection] = await db.update(inspections)
+        .set({
+          status: result,
+          resolvedAt: new Date(),
+          resolvedBy: userId,
+          resolutionNotes: notes,
+        })
+        .where(and(
+          eq(inspections.id, parseInt(inspectionId)),
+          eq(inspections.projectId, projectId)
+        ))
+        .returning();
+
+      // Sinkronisasi ke batch jika ini MIR
+      if (updatedInspection.type === 'MATERIAL_INSPECTION') {
+        await syncMIRResultToBatch({
+          inspectionId: parseInt(inspectionId),
+          projectId,
+          result,
+          userId,
+          notes,
+        });
+      }
+
+      res.json(updatedInspection);
+    } catch (error) {
+      if (error.code === 'PROJECT_ISOLATION_VIOLATION') {
+        return res.status(403).json({ error: 'Akses ditolak' });
+      }
+      res.status(500).json({ error: 'Gagal memproses MIR' });
+    }
+  }
+);
+```
+
+---
+
+## 4. UI Updates
+
+```tsx
+// artifacts/qa-qc-konstruksi/src/pages/Materials.tsx
+function BatchTraceDetail({ batchId, projectId }: { batchId: number; projectId: string }) {
+  const { data: batch, isLoading } = useQuery({
+    queryKey: ['batch-trace', projectId, batchId],
+    queryFn: () => fetch(`/api/projects/${projectId}/materials/batches/${batchId}/trace`).then(r => r.json()),
+  });
+
+  if (isLoading) return <Spinner />;
+  if (!batch) return <div>Batch tidak ditemukan</div>;
+
+  return (
+    <div className="batch-trace">
+      <section>
+        <h3>Informasi Batch</h3>
+        <dl>
+          <dt>Batch Number</dt>
+          <dd>{batch.batchNumber}</dd>
+          <dt>Supplier</dt>
+          <dd>{batch.supplierName}</dd>
+          <dt>Status Inspeksi</dt>
+          <dd>
+            <StatusBadge status={batch.inspectionStatus} />
+          </dd>
+        </dl>
+      </section>
+
+      {/* Tampilkan referensi MIR */}
+      {batch.mirInspection && (
+        <section>
+          <h3>Material Inspection Request (MIR)</h3>
+          <dl>
+            <dt>MIR ID</dt>
+            <dd>
+              <Link to={`/projects/${projectId}/inspections/${batch.mirInspection.id}`}>
+                MIR #{batch.mirInspection.id}
+              </Link>
+            </dd>
+            <dt>Status</dt>
+            <dd>
+              <StatusBadge status={batch.mirInspection.status} />
+            </dd>
+            {batch.mirInspection.approvedAt && (
+              <>
+                <dt>Disetujui</dt>
+                <dd>
+                  {formatDate(batch.mirInspection.approvedAt)} oleh{' '}
+                  {batch.mirInspection.approvedByUser?.name}
+                </dd>
+              </>
+            )}
+          </dl>
+        </section>
+      )}
+
+      {!batch.mirInspection && (
+        <section>
+          <h3>Material Inspection Request (MIR)</h3>
+          <p className="text-muted">Belum ada MIR yang tertaut ke batch ini</p>
+          <Button onClick={() => openLinkMIRDialog(batchId)}>
+            Tautkan MIR
+          </Button>
+        </section>
+      )}
+
+      {/* Inventori dan penggunaan */}
+      <section>
+        <h3>Inventori</h3>
+        {/* ... */}
+      </section>
+
+      <section>
+        <h3>Riwayat Penggunaan</h3>
+        {/* ... */}
+      </section>
+    </div>
+  );
+}
+```
+
+```tsx
+// artifacts/qa-qc-konstruksi/src/pages/Inspections.tsx
+// Saat membuat MIR baru, tampilkan dropdown untuk memilih batch
+function CreateMIRForm({ projectId }: { projectId: string }) {
+  const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
+
+  const { data: batches } = useQuery({
+    queryKey: ['pending-batches', projectId],
+    queryFn: () => 
+      fetch(`/api/projects/${projectId}/materials/batches?status=pending`)
+        .then(r => r.json()),
+  });
+
+  const handleSubmit = async (formData: FormData) => {
+    // Buat inspeksi MIR
+    const inspection = await createInspection({
+      type: 'MATERIAL_INSPECTION',
+      projectId,
+      // ... field lainnya
+    });
+
+    // Tautkan ke batch jika dipilih
+    if (selectedBatchId) {
+      await fetch(`/api/projects/${projectId}/materials/batches/${selectedBatchId}/link-mir`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inspectionId: inspection.id }),
+      });
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      {/* ... field MIR lainnya */}
+
+      <div>
+        <label>Tautkan ke Batch Material (opsional)</label>
+        <select 
+          value={selectedBatchId || ''}
+          onChange={(e) => setSelectedBatchId(e.target.value ? parseInt(e.target.value) : null)}
+        >
+          <option value="">-- Pilih Batch --</option>
+          {batches?.map(batch => (
+            <option key={batch.id} value={batch.id}>
+              {batch.batchNumber} - {batch.supplierName}
+            </option>
+          ))}
+        </select>
+      </div>
+    </form>
+  );
+}
+```
+
+---
+
+## 5. Integration Tests
+
+```typescript
+// artifacts/api-server/tests/mir-batch-sync.test.mjs
+import { describe, it, expect, beforeEach } from 'vitest';
+import { request } from 'supertest';
+import { app } from '../src/app';
+import { db } from '../src/lib/db';
+import { materialBatches, inspections, auditLogs } from '../src/lib/db/schema';
+
+describe('MIR → Batch Sync', () => {
+  let projectId;
+  let qaEngineerToken;
+  let teknisiToken;
+  let batch;
+  let mir;
+
+  beforeEach(async () => {
+    // Setup test data
+    projectId = await createTestProject();
+    qaEngineerToken = await createTestUser({ role: 'QA_ENGINEER' });
+    teknisiToken = await createTestUser({ role: 'TEKNISI' });
+    
+    batch = await db.insert(materialBatches).values({
+      projectId,
+      materialTypeId: 1,
+      batchNumber: 'BATCH-001',
+      supplierName: 'Supplier A',
+      deliveryDate: new Date(),
+      quantity: 100,
+      inspectionStatus: 'pending',
+    }).returning();
+
+    mir = await db.insert(inspections).values({
+      projectId,
+      type: 'MATERIAL_INSPECTION',
+      relatedBatchId: batch.id,
+      status: 'pending',
+    }).returning();
+  });
+
+  describe('Project Isolation', () => {
+    it('menolak sinkronisasi jika batch tidak dalam proyek yang sama', async () => {
+      const otherProjectId = await createTestProject();
+      const otherBatch = await db.insert(materialBatches).values({
+        projectId: otherProjectId,
+        materialTypeId: 1,
+        batchNumber: 'BATCH-OTHER',
+        supplierName: 'Supplier B',
+        deliveryDate: new Date(),
+        quantity: 50,
+        inspectionStatus: 'pending',
+      }).returning();
+
+      const otherMir = await db.insert(inspections).values({
+        projectId: otherProjectId,
+        type: 'MATERIAL_INSPECTION',
+        relatedBatchId: otherBatch.id,
+        status: 'pending',
+      }).returning();
+
+      // Coba approve MIR dari proyek lain menggunakan token proyek pertama
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/inspections/${otherMir.id}/resolve`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ result: 'approved' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('menolak link MIR ke batch dari proyek berbeda', async () => {
+      const otherProjectId = await createTestProject();
+      const otherBatch = await db.insert(materialBatches).values({
+        projectId: otherProjectId,
+        materialTypeId: 1,
+        batchNumber: 'BATCH-OTHER',
+        supplierName: 'Supplier B',
+        deliveryDate: new Date(),
+        quantity: 50,
+      }).returning();
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/materials/batches/${otherBatch.id}/link-mir`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ inspectionId: mir.id });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('Status Transitions', () => {
+    it('menyetujui MIR mengubah status batch menjadi approved', async () => {
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ result: 'approved', notes: 'Material sesuai spesifikasi' });
+
+      expect(res.status).toBe(200);
+
+      const updatedBatch = await db.query.materialBatches.findFirst({
+        where: eq(materialBatches.id, batch.id),
+      });
+
+      expect(updatedBatch.inspectionStatus).toBe('approved');
+    });
+
+    it('menolak MIR mengubah status batch menjadi rejected dan mengarantina inventori', async () => {
+      // Tambahkan inventori
+      await db.insert(materialInventory).values({
+        batchId: batch.id,
+        storageLocationId: 1,
+        quantityRemaining: 100,
+      });
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ result: 'rejected', notes: 'Material tidak sesuai' });
+
+      expect(res.status).toBe(200);
+
+      const updatedBatch = await db.query.materialBatches.findFirst({
+        where: eq(materialBatches.id, batch.id),
+      });
+      expect(updatedBatch.inspectionStatus).toBe('rejected');
+
+      const inventory = await db.query.materialInventory.findFirst({
+        where: eq(materialInventory.batchId, batch.id),
+      });
+      expect(inventory.isQuarantined).toBe(true);
+      expect(inventory.quarantineReason).toContain('MIR #' + mir.id);
+    });
+
+    it('conditional MIR mengubah status batch menjadi conditional', async () => {
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ result: 'conditional', notes: 'Perlu inspeksi ulang' });
+
+      expect(res.status).toBe(200);
+
+      const updatedBatch = await db.query.materialBatches.findFirst({
+        where: eq(materialBatches.id, batch.id),
+      });
+      expect(updatedBatch.inspectionStatus).toBe('conditional');
+    });
+  });
+
+  describe('Audit Trail', () => {
+    it('mencatat audit trail saat MIR ditautkan ke batch', async () => {
+      const newMir = await db.insert(inspections).values({
+        projectId,
+        type: 'MATERIAL_INSPECTION',
+        status: 'pending',
+      }).returning();
+
+      await request(app)
+        .post(`/api/projects/${projectId}/materials/batches/${batch.id}/link-mir`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ inspectionId: newMir.id });
+
+      const audit = await db.query.auditLogs.findFirst({
+        where: and(
+          eq(auditLogs.recordType, 'material_batch'),
+          eq(auditLogs.recordId, batch.id),
+          eq(auditLogs.action, 'LINK_MIR_TO_BATCH')
+        ),
+      });
+
+      expect(audit).toBeDefined();
+      expect(audit.before).toEqual({ mirInspectionId: null });
+      expect(audit.after).toEqual({ mirInspectionId: newMir.id });
+    });
+
+    it('mencatat audit trail saat status batch berubah', async () => {
+      await request(app)
+        .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ result: 'approved' });
+
+      const audit = await db.query.auditLogs.findFirst({
+        where: and(
+          eq(auditLogs.recordType, 'material_batch'),
+          eq(auditLogs.recordId, batch.id),
+          eq(auditLogs.action, 'SYNC_MIR_TO_BATCH')
+        ),
+      });
+
+      expect(audit).toBeDefined();
+      expect(audit.before.inspectionStatus).toBe('pending');
+      expect(audit.after.inspectionStatus).toBe('approved');
+      expect(audit.metadata.inspectionId).toBe(mir.id);
+      expect(audit.metadata.result).toBe('approved');
+    });
+  });
+
+  describe('Transaction Rollback', () => {
+    it('rollback seluruh perubahan jika audit gagal dicatat', async () => {
+      // Mock audit log insertion to fail
+      const originalInsert = db.insert;
+      db.insert = vi.fn().mockImplementation((table) => {
+        if (table === auditLogs) {
+          throw new Error('Audit log failed');
+        }
+        return originalInsert(table);
+      });
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+        .set('Authorization', `Bearer ${qaEngineerToken}`)
+        .send({ result: 'approved' });
+
+      expect(res.status).toBe(500);
+
+      // Batch status tidak berubah
+      const batch = await db.query.materialBatches.findFirst({
+        where: eq(materialBatches.id, batch.id),
+      });
+      expect(batch.inspectionStatus).toBe('pending');
+
+      // Restore
+      db.insert = originalInsert;
+    });
+  });
+
+  describe('RBAC', () => {
+    it('teknisi tidak bisa menyetujui MIR', async () => {
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/inspections/${mir.id}/resolve`)
+        .set('Authorization', `Bearer ${teknisiToken}`)
+        .send({ result: 'approved' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('teknisi tidak bisa menautkan MIR ke batch', async () => {
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/materials/batches/${batch.id}/link-mir`)
+        .set('Authorization', `Bearer ${teknisiToken}`)
+        .send({ inspectionId: mir.id });
+
+      expect(res.status).toBe(403);
+    });
+  });
+});
+```
+
+---
+
+## Ringkasan Implementasi
+
+| Aspek | Implementasi |
+|---|---|
+| **Schema** | Tambah `mirInspectionId`, `mirLinkedAt`, `mirLinkedBy` di `materialBatches` |
+| **Service** | `syncMIRResultToBatch()` dan `linkMIRToBatch()` dengan transaksi atomik |
+| **API** | Endpoint link MIR, endpoint resolve MIR dengan sinkronisasi otomatis |
+| **UI** | Tampilkan referensi MIR di batch trace, form untuk tautkan MIR saat create |
+| **Audit** | Catat setiap perubahan status dan link dengan before/after |
+| **Isolation** | Verifikasi batch dan MIR dalam proyek yang sama |
+| **Rollback** | Transaksi memastikan semua atau tidak ada perubahan |
+| **Tests** | Cover project isolation, status transitions, audit, rollback, RBAC |
+
+Implementasi ini memastikan status MIR dan batch selalu sinkron, dengan audit trail lengkap dan isolasi proyek yang ketat.
