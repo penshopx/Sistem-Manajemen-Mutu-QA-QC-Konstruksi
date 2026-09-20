@@ -1,0 +1,9 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "jmxGK4AzeQ_2YycJqQK5G"
+uri = "file://artifacts/qa-qc-konstruksi-video/public/audio/bg_music.mp3"
+type = "audio"
+title = "construction quality background music"
+description = "Generated music: Corporate cinematic instrumental background music for a 90-second construction quality management explainer. Low percussion, warm synth pulse, restrained electric guitar texture and …"

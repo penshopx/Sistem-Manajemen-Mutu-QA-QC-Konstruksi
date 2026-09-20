@@ -1,6 +1,6 @@
-# [Project name]
+# Sistem Manajemen Mutu QA/QC Konstruksi
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Video pengenalan untuk aplikasi pengendalian mutu konstruksi berbasis alur QA/QC dan jenjang kompetensi SKKNI.
 
 ## Run & Operate
 
@@ -22,19 +22,25 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/qa-qc-konstruksi-video/` — video animasi 90 detik.
+- `artifacts/qa-qc-konstruksi-video/src/components/video/VideoTemplate.tsx` — urutan, durasi, audio, dan komposisi utama.
+- `artifacts/qa-qc-konstruksi-video/src/components/video/video_scenes/Scenes.tsx` — sepuluh scene video.
+- `artifacts/qa-qc-konstruksi-video/src/index.css` — token warna, tipografi, dan lapisan visual.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Rasio video dikunci 16:9 untuk presentasi, YouTube, dan web.
+- Durasi total 90 detik dibagi ke sepuluh scene dengan musik instrumental yang tersinkron.
+- Kontrol preview hanya muncul dalam iframe Replit; hasil ekspor tetap bersih tanpa kontrol.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Video menjelaskan masalah data mutu yang terfragmentasi dan alur terpadu RMK/ITP, MIR/WIR, bukti inspeksi, NCR/CAPA, dokumen terkendali, audit, dashboard, serta peran berbasis SKKNI.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Gunakan bahasa Indonesia.
+- Durasi video 90 detik dengan rasio 16:9.
 
 ## Gotchas
 

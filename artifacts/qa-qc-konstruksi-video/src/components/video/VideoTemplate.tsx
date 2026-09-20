@@ -1,10 +1,12 @@
 import {
   SafeFrame,
   VideoCanvas,
+  VideoPausedContext,
   type VideoAspectRatio,
   useVideoPlayer,
 } from '@/lib/video';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useRef, type ComponentType } from 'react';
 
 import {
   Scene01,
@@ -19,7 +21,7 @@ import {
   Scene10,
 } from './video_scenes/Scenes';
 
-const SCENE_DURATIONS = {
+export const SCENE_DURATIONS = {
   opening: 7000,
   fragmentation: 9000,
   plan: 9000,
@@ -34,17 +36,80 @@ const SCENE_DURATIONS = {
 
 const VIDEO_ASPECT_RATIO: VideoAspectRatio = '16:9';
 
-export default function VideoTemplate() {
-  const { currentScene } = useVideoPlayer({
-    durations: SCENE_DURATIONS,
-  });
+const SCENE_COMPONENTS: Record<string, ComponentType> = {
+  opening: Scene01,
+  fragmentation: Scene02,
+  plan: Scene03,
+  execution: Scene04,
+  evidence: Scene05,
+  correctiveAction: Scene06,
+  controlledDocuments: Scene07,
+  dashboard: Scene08,
+  roles: Scene09,
+  closing: Scene10,
+};
+
+const SCENE_START_SEC: Record<string, number> = (() => {
+  const offsets: Record<string, number> = {};
+  let cumulativeMs = 0;
+  for (const [key, duration] of Object.entries(SCENE_DURATIONS)) {
+    offsets[key] = cumulativeMs / 1000;
+    cumulativeMs += duration;
+  }
+  return offsets;
+})();
+
+const AUDIO_SEEK_EPSILON_SEC = 0.18;
+
+export default function VideoTemplate({
+  durations = SCENE_DURATIONS,
+  loop = true,
+  paused = false,
+  muted = false,
+  onSceneChange,
+}: {
+  durations?: Record<string, number>;
+  loop?: boolean;
+  paused?: boolean;
+  muted?: boolean;
+  onSceneChange?: (sceneKey: string) => void;
+} = {}) {
+  const { currentSceneKey } = useVideoPlayer({ durations, loop, paused });
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const lastSceneKeyRef = useRef<string | null>(null);
+  const baseSceneKey = currentSceneKey.replace(/_r[12]$/, '');
+  const sceneIndex = Object.keys(SCENE_DURATIONS).indexOf(baseSceneKey);
+  const SceneComponent = SCENE_COMPONENTS[baseSceneKey];
+
+  useEffect(() => {
+    onSceneChange?.(currentSceneKey);
+  }, [currentSceneKey, onSceneChange]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = 0.45;
+    if (paused) {
+      audio.pause();
+      return;
+    }
+    if (lastSceneKeyRef.current !== currentSceneKey) {
+      lastSceneKeyRef.current = currentSceneKey;
+      const targetTime = SCENE_START_SEC[baseSceneKey] ?? 0;
+      if (Math.abs(audio.currentTime - targetTime) > AUDIO_SEEK_EPSILON_SEC) {
+        audio.currentTime = targetTime;
+      }
+    }
+    audio.play().catch(() => {});
+  }, [baseSceneKey, currentSceneKey, muted, paused]);
 
   return (
-    <VideoCanvas
-      className="video-root"
-      aspectRatio={VIDEO_ASPECT_RATIO}
-      style={{ background: 'var(--color-bg-dark)' }}
-    >
+    <VideoPausedContext.Provider value={paused}>
+      <VideoCanvas
+        className="video-root"
+        aspectRatio={VIDEO_ASPECT_RATIO}
+        style={{ background: 'var(--color-bg-dark)' }}
+      >
       <motion.div
         aria-hidden="true"
         className="scene-layer"
@@ -61,7 +126,7 @@ export default function VideoTemplate() {
         aria-hidden="true"
         className="scene-layer grid-surface"
         style={{ opacity: .28, zIndex: 1 }}
-        animate={{ x: currentScene % 2 === 0 ? 0 : -18, y: currentScene % 3 === 0 ? 0 : 10 }}
+        animate={{ x: sceneIndex % 2 === 0 ? 0 : -18, y: sceneIndex % 3 === 0 ? 0 : 10 }}
         transition={{ duration: 1.3, ease: 'easeInOut' }}
       />
       <motion.div
@@ -77,8 +142,8 @@ export default function VideoTemplate() {
           zIndex: 2,
         }}
         animate={{
-          rotate: currentScene * 24,
-          scale: currentScene === 0 ? 1.2 : currentScene === 9 ? .75 : 1,
+          rotate: sceneIndex * 24,
+          scale: sceneIndex === 0 ? 1.2 : sceneIndex === 9 ? .75 : 1,
         }}
         transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] }}
       />
@@ -100,18 +165,17 @@ export default function VideoTemplate() {
       </motion.div>
       <SafeFrame>
         <AnimatePresence mode="sync" initial={false}>
-          {currentScene === 0 && <Scene01 key="opening" />}
-          {currentScene === 1 && <Scene02 key="fragmentation" />}
-          {currentScene === 2 && <Scene03 key="plan" />}
-          {currentScene === 3 && <Scene04 key="execution" />}
-          {currentScene === 4 && <Scene05 key="evidence" />}
-          {currentScene === 5 && <Scene06 key="corrective-action" />}
-          {currentScene === 6 && <Scene07 key="controlled-documents" />}
-          {currentScene === 7 && <Scene08 key="dashboard" />}
-          {currentScene === 8 && <Scene09 key="roles" />}
-          {currentScene === 9 && <Scene10 key="closing" />}
+          {SceneComponent && <SceneComponent key={currentSceneKey} />}
         </AnimatePresence>
       </SafeFrame>
-    </VideoCanvas>
+        <audio
+          ref={audioRef}
+          src={`${import.meta.env.BASE_URL}audio/bg_music.mp3`}
+          preload="auto"
+          autoPlay
+          muted={muted}
+        />
+      </VideoCanvas>
+    </VideoPausedContext.Provider>
   );
 }
