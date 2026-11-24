@@ -1,7 +1,11 @@
 import convert from "heic-convert";
 import type { File } from "@google-cloud/storage";
+import jpeg from "jpeg-js";
 
 const HEIC_TYPES = new Set(["image/heic", "image/heif"]);
+const EXIF_HEADER = Buffer.from("Exif\0\0", "binary");
+const GRID_ITEM_TYPE = Buffer.from("grid", "ascii");
+const IROT_BOX = Buffer.from([0, 0, 0, 9, 0x69, 0x72, 0x6f, 0x74]);
 
 export type AttachmentPreviewResult =
   | { status: "original"; objectPath: null; error: null }
@@ -15,6 +19,99 @@ export function needsHeicPreview(contentType: string, fileName: string) {
   return HEIC_TYPES.has(contentType.toLowerCase()) || /\.(heic|heif)$/i.test(fileName);
 }
 
+function readExifOrientation(buffer: Buffer): number | null {
+  let exifOffset = buffer.indexOf(EXIF_HEADER);
+
+  while (exifOffset !== -1) {
+    const tiffOffset = exifOffset + EXIF_HEADER.length;
+    const byteOrder = buffer.subarray(tiffOffset, tiffOffset + 2).toString("ascii");
+    const littleEndian = byteOrder === "II";
+    if (littleEndian || byteOrder === "MM") {
+      const readUInt16 = (offset: number) => littleEndian
+        ? buffer.readUInt16LE(offset)
+        : buffer.readUInt16BE(offset);
+      const readUInt32 = (offset: number) => littleEndian
+        ? buffer.readUInt32LE(offset)
+        : buffer.readUInt32BE(offset);
+
+      try {
+        if (readUInt16(tiffOffset + 2) === 42) {
+          const ifdOffset = tiffOffset + readUInt32(tiffOffset + 4);
+          const entryCount = readUInt16(ifdOffset);
+          for (let index = 0; index < entryCount; index += 1) {
+            const entryOffset = ifdOffset + 2 + index * 12;
+            if (readUInt16(entryOffset) === 0x0112) {
+              const orientation = readUInt16(entryOffset + 8);
+              return orientation >= 1 && orientation <= 8 ? orientation : null;
+            }
+          }
+        }
+      } catch {
+        // Keep looking: "Exif" also appears in HEIF item metadata before its TIFF payload.
+      }
+    }
+    exifOffset = buffer.indexOf(EXIF_HEADER, exifOffset + 1);
+  }
+
+  return null;
+}
+
+function needsExifOrientationFallback(buffer: Buffer) {
+  const orientation = readExifOrientation(buffer);
+  return orientation !== null
+    && orientation !== 1
+    && buffer.indexOf(GRID_ITEM_TYPE) !== -1
+    && buffer.indexOf(IROT_BOX) === -1;
+}
+
+function applyExifOrientation(jpegBytes: Buffer, orientation: number) {
+  const decoded = jpeg.decode(jpegBytes, {
+    formatAsRGBA: true,
+    useTArray: true,
+  });
+  const swapsAxes = orientation >= 5;
+  const width = swapsAxes ? decoded.height : decoded.width;
+  const height = swapsAxes ? decoded.width : decoded.height;
+  const data = Buffer.alloc(width * height * 4);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let sourceX = x;
+      let sourceY = y;
+      switch (orientation) {
+        case 2: sourceX = decoded.width - 1 - x; break;
+        case 3:
+          sourceX = decoded.width - 1 - x;
+          sourceY = decoded.height - 1 - y;
+          break;
+        case 4: sourceY = decoded.height - 1 - y; break;
+        case 5:
+          sourceX = y;
+          sourceY = x;
+          break;
+        case 6:
+          sourceX = y;
+          sourceY = decoded.height - 1 - x;
+          break;
+        case 7:
+          sourceX = decoded.width - 1 - y;
+          sourceY = decoded.height - 1 - x;
+          break;
+        case 8:
+          sourceX = decoded.width - 1 - y;
+          sourceY = x;
+          break;
+      }
+
+      const sourceOffset = (sourceY * decoded.width + sourceX) * 4;
+      const destinationOffset = (y * width + x) * 4;
+      data.set(decoded.data.subarray(sourceOffset, sourceOffset + 4), destinationOffset);
+    }
+  }
+
+  return jpeg.encode({ width, height, data }, 85).data;
+}
+
 export async function createHeicPreview(
   source: File,
   preview: File,
@@ -23,12 +120,16 @@ export async function createHeicPreview(
 ): Promise<AttachmentPreviewResult> {
   try {
     const [sourceBytes] = await source.download();
-    const output = await convertImage({
+    const converted = Buffer.from(await convertImage({
       buffer: sourceBytes,
       format: "JPEG",
       quality: 0.85,
-    });
-    await preview.save(Buffer.from(output), {
+    }));
+    const orientation = readExifOrientation(sourceBytes);
+    const output = orientation !== null && needsExifOrientationFallback(sourceBytes)
+      ? applyExifOrientation(converted, orientation)
+      : converted;
+    await preview.save(output, {
       resumable: false,
       metadata: {
         contentType: "image/jpeg",

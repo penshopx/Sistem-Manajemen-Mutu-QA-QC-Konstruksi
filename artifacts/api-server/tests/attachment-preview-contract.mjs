@@ -136,6 +136,56 @@ assert.ok(
   "Subjek berwarna cokelat harus tetap berada di bagian bawah foto potret",
 );
 
+const iphoneTiledExifOnly = await readFile(
+  path.join(testDirectory, "fixtures", "iphone-tiled-exif-only.heic"),
+);
+assert.equal(
+  iphoneTiledExifOnly.indexOf(Buffer.from("grid")),
+  1158,
+  "Fixture harus berupa foto iPhone bertile",
+);
+assert.equal(
+  iphoneTiledExifOnly.indexOf(Buffer.from("irot")),
+  -1,
+  "Fixture harus mempertahankan kasus Apple tanpa transformasi irot",
+);
+
+const tiledSource = fakeFile(iphoneTiledExifOnly);
+const tiledPreview = fakeFile();
+const tiledConversion = await createHeicPreview(
+  tiledSource,
+  tiledPreview,
+  "/objects/uploads/iphone-tiled-exif-only-preview",
+);
+assert.equal(tiledConversion.status, "ready");
+
+const tiledJpegBytes = tiledPreview.state.saved.outputBytes;
+assert.deepEqual(tiledJpegBytes.subarray(0, 2), Buffer.from([0xff, 0xd8]));
+assert.deepEqual(tiledJpegBytes.subarray(-2), Buffer.from([0xff, 0xd9]));
+
+const decodedTiledPreview = jpeg.decode(tiledJpegBytes, {
+  formatAsRGBA: true,
+  useTArray: true,
+});
+assert.equal(decodedTiledPreview.width, 3024);
+assert.equal(decodedTiledPreview.height, 4032);
+const tiledSky = averageRgb(
+  decodedTiledPreview,
+  Math.floor(decodedTiledPreview.width * 0.5),
+  Math.floor(decodedTiledPreview.height * 0.12),
+  160,
+);
+const tiledGround = averageRgb(
+  decodedTiledPreview,
+  Math.floor(decodedTiledPreview.width * 0.5),
+  Math.floor(decodedTiledPreview.height * 0.88),
+  160,
+);
+assert.ok(
+  tiledSky[2] > tiledGround[2] * 2.5,
+  "Langit biru harus berada di bagian atas foto iPhone yang sudah ditegakkan",
+);
+
 const failedPreview = fakeFile();
 const failed = await createHeicPreview(
   source,
